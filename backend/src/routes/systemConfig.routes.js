@@ -11,9 +11,18 @@ router.use(authenticate);
 router.put('/smtp', requirePermission('system.configure'), async (req, res, next) => {
   try {
     const { host, port, secure, username, password, fromAddress } = req.body;
+
+    let encryptedPassword;
+    if (password) {
+      encryptedPassword = encryptField(password);
+    } else {
+      const existing = await prisma.systemConfig.findUnique({ where: { key: 'smtp' } });
+      encryptedPassword = existing?.value?.encryptedPassword;
+    }
+
     const value = {
       host, port, secure, username, fromAddress,
-      ...(password && { encryptedPassword: encryptField(password) }),
+      ...(encryptedPassword && { encryptedPassword }),
     };
     await prisma.systemConfig.upsert({
       where: { key: 'smtp' },
