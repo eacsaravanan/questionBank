@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { LogOut, ShieldCheck } from 'lucide-react';
+import { LogOut } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 
 export default function AppShell({ title, navItems, children }) {
@@ -12,8 +12,8 @@ export default function AppShell({ title, navItems, children }) {
       <aside className="w-64 shrink-0 bg-ink-900 text-paper flex flex-col">
         <div className="px-6 py-6 border-b border-white/10">
           <div className="flex items-center gap-2">
-            <ShieldCheck className="text-gold-500" size={22} />
-            <span className="font-display font-bold text-lg tracking-tight">Prashna</span>
+            <img src="/dturn-logo.png" alt="dturn" className="h-6 w-auto" />
+            <span className="font-display font-bold text-lg tracking-tight">dturn Question Bank</span>
           </div>
           <p className="text-xs text-white/50 mt-1 font-mono">{title}</p>
         </div>

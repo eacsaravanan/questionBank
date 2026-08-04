@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ShieldCheck, KeyRound } from 'lucide-react';
+import { KeyRound } from 'lucide-react';
 import api from '../../api/client.js';
 
 export default function ExamGate() {
@@ -28,7 +28,7 @@ export default function ExamGate() {
   return (
     <div className="min-h-screen bg-ink-950 flex items-center justify-center px-4">
       <div className="w-full max-w-sm text-center">
-        <ShieldCheck className="text-gold-500 mx-auto mb-4" size={36} />
+        <img src="/dturn-logo.png" alt="dturn" className="h-9 w-auto mx-auto mb-4" />
         <h1 className="font-display text-white text-xl font-bold mb-1">Exam verification</h1>
         <p className="text-white/50 text-sm mb-8 font-mono">{examCode}</p>
 

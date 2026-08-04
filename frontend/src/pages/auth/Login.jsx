@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ShieldCheck, Lock } from 'lucide-react';
+import { Lock } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 
 export default function Login() {
@@ -36,8 +36,8 @@ export default function Login() {
     <div className="min-h-screen bg-ink-950 flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <div className="flex items-center gap-2 justify-center mb-8">
-          <ShieldCheck className="text-gold-500" size={28} />
-          <span className="font-display font-bold text-2xl text-white tracking-tight">Prashna</span>
+          <img src="/dturn-logo.png" alt="dturn" className="h-8 w-auto" />
+          <span className="font-display font-bold text-2xl text-white tracking-tight">dturn Question Bank</span>
         </div>
 
         <form onSubmit={handleSubmit} className="bg-ink-900 border border-white/10 rounded-2xl p-8">
