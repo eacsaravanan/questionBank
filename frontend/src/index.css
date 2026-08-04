@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --tamil-font: 'Noto Sans Tamil', sans-serif;
+}
+
+/* Any Tamil-script text automatically renders in a Tamil-shaped font,
+   regardless of the surrounding UI font. */
+[lang="ta"], .lang-ta {
+  font-family: var(--tamil-font);
+}
+
+::selection { background: #D4A72C; color: #0B1220; }
+
+/* Visible keyboard focus everywhere — required for the exam UI especially */
+:focus-visible {
+  outline: 2px solid #D4A72C;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

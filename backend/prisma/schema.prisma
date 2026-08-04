@@ -1,0 +1,575 @@
+// ============================================================================
+// Question Bank Platform — Core Data Model
+// Postgres + Prisma
+// Hierarchy: Exam > Subject > Unit > Chapter > Topic > Subtopic > Question
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// RBAC — fully dynamic: Roles and Permissions are DATA, not enums, so
+// Super Admin can create new roles / permissions at runtime without a
+// code deploy.
+// ---------------------------------------------------------------------------
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique // e.g. "Super Admin", "Admin", "SME-Physics", "Paper Approver"
+  description String?
+  isSystem    Boolean  @default(false) // system roles (SUPER_ADMIN) cannot be deleted
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  permissions RolePermission[]
+  users       UserRole[]
+}
+
+model Permission {
+  id          String   @id @default(uuid())
+  code        String   @unique // e.g. "question.create", "paper.publish", "exam.schedule"
+  module      String   // e.g. "Question Bank", "Exam Scheduling", "User Management"
+  description String?
+
+  roles RolePermission[]
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+model User {
+  id                String    @id @default(uuid())
+  employeeCode      String?   @unique // internal staff code, null for aspirants
+  username          String    @unique
+  email             String    @unique
+  passwordHash      String
+  fullName          String
+  phone             String?
+  isActive          Boolean   @default(true)
+  mfaEnabled        Boolean   @default(false)
+  mfaSecret         String?   // encrypted at rest via app-layer encryption, never returned by API
+  lastLoginAt       DateTime?
+  lastLoginIp       String?
+  failedLoginCount  Int       @default(0)
+  lockedUntil       DateTime?
+  passwordChangedAt DateTime  @default(now())
+  mustResetPassword Boolean   @default(false)
+  preferredLanguage String    @default("en") // en, ta, hi, ...
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  roles             UserRole[]
+  subjectAssignments SmeSubjectAssignment[]
+  questionsCreated  Question[]        @relation("QuestionCreatedBy")
+  questionsReviewed QuestionReview[]
+  papersCreated     QuestionPaper[]   @relation("PaperCreatedBy")
+  paperApprovals    PaperApproval[]
+  auditLogs         AuditLog[]
+  examRegistrations ExamRegistration[]
+  attempts          ExamAttempt[]
+  notifications     Notification[]
+  sessions          Session[]
+}
+
+model UserRole {
+  userId String
+  roleId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+}
+
+// SME (Subject Matter Expert) assignment: Super Admin assigns which SME /
+// Approver handles which Subject, per Exam. Fully dynamic many-to-many.
+model SmeSubjectAssignment {
+  id        String   @id @default(uuid())
+  userId    String
+  subjectId String
+  role      String   // "SME" | "APPROVER" — kept as string so more assignment
+                      // roles can be added later without a migration
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, subjectId, role])
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  userId       String
+  refreshToken String   @unique
+  userAgent    String?
+  ipAddress    String?
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------------------------
+// Content hierarchy — every level is a normal table (not hardcoded), so
+// Super Admin / Admin can add any number of exams, subjects, units, etc.
+// at any time from the UI. `config` (JSON) makes every level extensible
+// without further migrations.
+// ---------------------------------------------------------------------------
+
+model Exam {
+  id          String   @id @default(uuid())
+  code        String   @unique // TNPSC, UPSC, SSC, RRB, BANKING, NEET, JEE, TNUSRB, CLAT ...
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  config      Json?    // exam-level master setup: default marks scheme, negative marking, etc.
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  subjects       Subject[]
+  masterConfigs  ExamMasterConfig[]
+  papers         QuestionPaper[]
+  schedules      ExamSchedule[]
+}
+
+model Subject {
+  id        String   @id @default(uuid())
+  examId    String
+  name      String
+  code      String?
+  config    Json?
+  createdAt DateTime @default(now())
+
+  exam        Exam      @relation(fields: [examId], references: [id], onDelete: Cascade)
+  units       Unit[]
+  questions   Question[]
+  assignments SmeSubjectAssignment[]
+
+  @@unique([examId, name])
+}
+
+model Unit {
+  id        String @id @default(uuid())
+  subjectId String
+  name      String
+  sortOrder Int    @default(0)
+
+  subject  Subject   @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  chapters Chapter[]
+}
+
+model Chapter {
+  id        String @id @default(uuid())
+  unitId    String
+  name      String
+  sortOrder Int    @default(0)
+
+  unit   Unit    @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  topics Topic[]
+  questions Question[]
+}
+
+model Topic {
+  id        String @id @default(uuid())
+  chapterId String
+  name      String
+  sortOrder Int    @default(0)
+
+  chapter    Chapter     @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  subtopics  Subtopic[]
+  questions  Question[]
+}
+
+model Subtopic {
+  id      String @id @default(uuid())
+  topicId String
+  name    String
+
+  topic     Topic      @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  questions Question[]
+}
+
+// ---------------------------------------------------------------------------
+// Questions — rich metadata as specified, fully multilingual.
+// Translations are a separate table so a question can exist in N languages
+// (English / Tamil / Hindi / ...) and new languages can be added anytime.
+// ---------------------------------------------------------------------------
+
+enum QuestionStatus {
+  DRAFT
+  SUBMITTED_FOR_REVIEW
+  CHANGES_REQUESTED
+  SME_APPROVED
+  SUPER_ADMIN_APPROVED
+  PUBLISHED
+  ARCHIVED
+}
+
+enum QuestionType {
+  SINGLE_MCQ
+  MULTI_MCQ
+  TRUE_FALSE
+  ASSERTION_REASON
+  STATEMENT_BASED
+  MATCH_FOLLOWING
+  SEQUENCE_ARRANGEMENT
+  FILL_BLANK
+  NUMERIC_VALUE
+  DESCRIPTIVE
+  CASE_STUDY
+  PASSAGE_BASED
+  DIAGRAM_BASED
+  DATA_INTERPRETATION
+}
+
+model Question {
+  id              String         @id @default(uuid())
+  humanCode       String         @unique // e.g. PHY-MEC-000125, auto-generated
+  subjectId       String
+  chapterId       String?
+  topicId         String?
+  subtopicId      String?
+  type            QuestionType
+  difficulty      String         // Beginner..Expert, configurable string not enum
+  bloomLevel      String?
+  marks           Decimal        @default(1)
+  negativeMarks   Decimal        @default(0)
+  timeLimitSec    Int?
+  source          String?        // NCERT, Previous Year, Editorial, Faculty Created
+  formulaUsed     Boolean        @default(false)
+  hasDiagram      Boolean        @default(false)
+  videoSolutionUrl String?
+  tags            String[]       @default([])
+  status          QuestionStatus @default(DRAFT)
+  createdById     String
+  preparationMode String         @default("MANUAL") // "MANUAL" | "OCR" — how this question was originally authored
+  ocrConfidence   Float?         // 0-1, set when preparationMode = "OCR"; null for manual entries
+  ocrSourceRef    String?        // reference to the uploaded source image, for audit/traceability
+  metadata        Json?          // fully open-ended extra fields, future-proofing
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  subject   Subject   @relation(fields: [subjectId], references: [id])
+  chapter   Chapter?  @relation(fields: [chapterId], references: [id])
+  topic     Topic?    @relation(fields: [topicId], references: [id])
+  subtopic  Subtopic? @relation(fields: [subtopicId], references: [id])
+  createdBy User      @relation("QuestionCreatedBy", fields: [createdById], references: [id])
+
+  translations QuestionTranslation[]
+  options      QuestionOption[]
+  reviews      QuestionReview[]
+  paperItems   QuestionPaperItem[]
+  attemptAnswers AttemptAnswer[]
+
+  @@index([subjectId, status])
+  @@index([status])
+}
+
+// One row per language per question — Unicode-safe (Postgres text is UTF-8
+// natively; Tamil / Hindi / any Indic script stored as-is, no transliteration
+// needed at the DB layer).
+model QuestionTranslation {
+  id           String  @id @default(uuid())
+  questionId   String
+  languageCode String  // "en", "ta", "hi", ...
+  body         String  // question text (rich text / markdown, Unicode)
+  explanation  String?
+  hint         String?
+
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([questionId, languageCode])
+}
+
+model QuestionOption {
+  id           String   @id @default(uuid())
+  questionId   String
+  sortOrder    Int      @default(0)
+  isCorrect    Boolean  @default(false)
+  matchKey     String?  // for match-the-following / sequence question types
+
+  question     Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  translations QuestionOptionTranslation[]
+}
+
+model QuestionOptionTranslation {
+  id           String @id @default(uuid())
+  optionId     String
+  languageCode String
+  body         String
+
+  option QuestionOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+
+  @@unique([optionId, languageCode])
+}
+
+model QuestionReview {
+  id         String   @id @default(uuid())
+  questionId String
+  reviewerId String
+  action     String   // "COMMENT" | "REQUEST_CHANGES" | "APPROVE" | "REJECT"
+  comment    String?
+  createdAt  DateTime @default(now())
+
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  reviewer User     @relation(fields: [reviewerId], references: [id])
+}
+
+// ---------------------------------------------------------------------------
+// Exam master configuration — fully dynamic per-exam marking scheme,
+// section structure, negative marking rules, etc.
+// ---------------------------------------------------------------------------
+
+model ExamMasterConfig {
+  id                String  @id @default(uuid())
+  examId            String
+  name              String  // e.g. "TNPSC Group 1 - Prelims 2026"
+  totalQuestions    Int
+  totalMarks        Decimal
+  qualifyingMarks   Decimal?
+  negativeMarking   Boolean @default(false)
+  negativeMarkValue Decimal? // e.g. 0.25
+  durationMinutes   Int
+  sections          Json    // [{subjectId, numQuestions, marksPerQuestion, order}, ...]
+  config            Json?   // any further open-ended rules
+  createdAt         DateTime @default(now())
+
+  exam Exam @relation(fields: [examId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------------------------
+// Question paper assembly & approval workflow
+// ---------------------------------------------------------------------------
+
+enum PaperStatus {
+  DRAFT
+  PENDING_SME_APPROVAL
+  CHANGES_REQUESTED
+  PENDING_SUPER_ADMIN_APPROVAL
+  APPROVED
+  SCHEDULED
+  RELEASED
+  COMPLETED
+  ARCHIVED
+}
+
+model QuestionPaper {
+  id              String      @id @default(uuid())
+  examId          String
+  masterConfigId  String?
+  brandingProfileId String?   // null = use the tenant default BrandingProfile at render time
+  title           String
+  paperType       String      // Mock Test, Series Test, Grand Test, Full Syllabus, ...
+  status          PaperStatus @default(DRAFT)
+  viewMode        String      @default("ALL_AT_ONCE") // "ALL_AT_ONCE" | "ONE_BY_ONE" — set by Super Admin at publish time
+  allowAnswerChange Boolean   @default(true)
+  createdById     String
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  exam       Exam                @relation(fields: [examId], references: [id])
+  brandingProfile BrandingProfile? @relation(fields: [brandingProfileId], references: [id])
+  createdBy  User                @relation("PaperCreatedBy", fields: [createdById], references: [id])
+  items      QuestionPaperItem[]
+  approvals  PaperApproval[]
+  schedules  ExamSchedule[]
+}
+
+model QuestionPaperItem {
+  id         String @id @default(uuid())
+  paperId    String
+  questionId String
+  sortOrder  Int    @default(0)
+  sectionName String?
+
+  paper    QuestionPaper @relation(fields: [paperId], references: [id], onDelete: Cascade)
+  question Question      @relation(fields: [questionId], references: [id])
+
+  @@unique([paperId, questionId])
+}
+
+model PaperApproval {
+  id        String   @id @default(uuid())
+  paperId   String
+  approverId String
+  stage     String   // "SME" | "SUPER_ADMIN"
+  action    String   // "APPROVED" | "CHANGES_REQUESTED"
+  comment   String?
+  createdAt DateTime @default(now())
+
+  paper    QuestionPaper @relation(fields: [paperId], references: [id], onDelete: Cascade)
+  approver User          @relation(fields: [approverId], references: [id])
+}
+
+// ---------------------------------------------------------------------------
+// Scheduling & secure delivery
+// ---------------------------------------------------------------------------
+
+model ExamCenter {
+  id        String  @id @default(uuid())
+  code      String  @unique
+  name      String
+  address   String?
+  capacity  Int?
+  config    Json?
+
+  schedules ExamSchedule[]
+}
+
+model ExamSchedule {
+  id              String    @id @default(uuid())
+  examId          String
+  paperId         String
+  examCenterId    String?
+  examCode        String    @unique // public-facing code candidates use to identify the exam
+  scheduledStart  DateTime
+  scheduledEnd    DateTime
+  releaseKeyHash  String    // hash of the decryption key released only at scheduledStart by the job scheduler
+  status          String    @default("PENDING") // PENDING | RELEASED | ONGOING | COMPLETED | CANCELLED
+  config          Json?     // proctoring rules, allowed IP ranges, browser lockdown flags, etc.
+  createdAt       DateTime  @default(now())
+
+  exam          Exam            @relation(fields: [examId], references: [id])
+  paper         QuestionPaper   @relation(fields: [paperId], references: [id])
+  examCenter    ExamCenter?     @relation(fields: [examCenterId], references: [id])
+  registrations ExamRegistration[]
+  attempts      ExamAttempt[]
+}
+
+// Only registered + verified candidates (username/password + unique exam
+// verification code, issued out of band) can attempt the exam.
+model ExamRegistration {
+  id                 String   @id @default(uuid())
+  scheduleId         String
+  userId             String
+  verificationCodeHash String
+  isVerified         Boolean  @default(false)
+  createdAt          DateTime @default(now())
+
+  schedule ExamSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  user     User         @relation(fields: [userId], references: [id])
+
+  @@unique([scheduleId, userId])
+}
+
+model ExamAttempt {
+  id           String    @id @default(uuid())
+  scheduleId   String
+  userId       String
+  startedAt    DateTime?
+  submittedAt  DateTime?
+  autoSubmitted Boolean  @default(false)
+  score        Decimal?
+  status       String    @default("NOT_STARTED") // NOT_STARTED | IN_PROGRESS | SUBMITTED | INVALIDATED
+  ipAddress    String?
+  browserFingerprint String?
+  integrityFlags Json?   // tab-switch count, copy-paste attempts, dev-tools detection, etc.
+
+  schedule ExamSchedule    @relation(fields: [scheduleId], references: [id])
+  user     User            @relation(fields: [userId], references: [id])
+  answers  AttemptAnswer[]
+
+  @@unique([scheduleId, userId])
+}
+
+model AttemptAnswer {
+  id           String   @id @default(uuid())
+  attemptId    String
+  questionId   String
+  selectedOptionIds String[] @default([])
+  answerText   String?
+  isMarkedForReview Boolean @default(false)
+  isCorrect    Boolean?
+  marksAwarded Decimal?
+  answeredAt   DateTime @updatedAt
+
+  attempt  ExamAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question Question    @relation(fields: [questionId], references: [id])
+
+  @@unique([attemptId, questionId])
+}
+
+// ---------------------------------------------------------------------------
+// White-labeling — Institute / Academy branding applied to generated
+// question papers (PDF header/footer). Multiple profiles can exist (e.g.
+// different franchises of the same platform); each QuestionPaper can pick
+// one, or fall back to the tenant default. `confidentialMode` is the
+// override some institutes need: when true, the renderer MUST ignore every
+// other field on this profile and print a blank/neutral header — no name,
+// no logo, no address — regardless of what's stored, so a paper can never
+// leak an institute's identity by accident.
+// ---------------------------------------------------------------------------
+
+model BrandingProfile {
+  id                String   @id @default(uuid())
+  label             String   // internal name for this profile, e.g. "Default", "ABC Academy — Confidential Batch"
+  instituteName     String?
+  address           String?
+  contactNumber     String?
+  contactEmail      String?
+  website           String?
+  logoUrl           String?
+  logoDisplayMode   String   @default("FIRST_PAGE_ONLY") // "ALL_PAGES" | "FIRST_PAGE_ONLY"
+  confidentialMode  Boolean  @default(false) // true = suppress ALL identity fields at render time, no exceptions
+  headerTemplate    String?  // HTML/text with placeholders: {{logo}} {{instituteName}} {{address}} {{examName}} {{paperCode}} {{date}}
+  footerTemplate    String?  // placeholders: {{pageNumber}} {{totalPages}} {{examCode}} {{confidentialNotice}}
+  isDefault         Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  papers QuestionPaper[]
+}
+
+// ---------------------------------------------------------------------------
+// Cross-cutting: audit log, notifications, system config (SMTP etc.)
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  action     String   // "LOGIN", "QUESTION_CREATE", "PAPER_APPROVE", "EXAM_SCHEDULE", ...
+  entityType String?
+  entityId   String?
+  ipAddress  String?
+  userAgent  String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  type      String
+  title     String
+  body      String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// System-wide configuration, key/value + JSON, editable only by Super Admin.
+// Used for SMTP creds (encrypted), feature flags, security policy, etc.
+model SystemConfig {
+  key       String   @id
+  value     Json
+  isSecret  Boolean  @default(false) // if true, value is encrypted at app layer before storage
+  updatedAt DateTime @updatedAt
+}
