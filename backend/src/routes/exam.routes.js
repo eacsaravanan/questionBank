@@ -11,8 +11,41 @@ const router = Router();
 router.use(authenticate);
 
 // ---------------------------------------------------------------------------
-// Super Admin: create & configure a schedule
+// Super Admin: list & inspect schedules
 // ---------------------------------------------------------------------------
+
+// GET /api/exam-schedules
+router.get('/', requirePermission('exam.schedule'), async (req, res, next) => {
+  try {
+    const schedules = await prisma.examSchedule.findMany({
+      include: {
+        exam: true,
+        paper: { select: { id: true, title: true } },
+        examCenter: true,
+        _count: { select: { registrations: true, attempts: true } },
+      },
+      orderBy: { scheduledStart: 'desc' },
+    });
+    res.json(schedules);
+  } catch (err) { next(err); }
+});
+
+// GET /api/exam-schedules/:id
+router.get('/:id', requirePermission('exam.schedule'), async (req, res, next) => {
+  try {
+    const schedule = await prisma.examSchedule.findUnique({
+      where: { id: req.params.id },
+      include: {
+        exam: true,
+        paper: { select: { id: true, title: true } },
+        examCenter: true,
+        registrations: { include: { user: { select: { id: true, fullName: true, username: true, email: true } } } },
+      },
+    });
+    if (!schedule) return res.status(404).json({ error: 'NOT_FOUND' });
+    res.json(schedule);
+  } catch (err) { next(err); }
+});
 
 // POST /api/exam-schedules
 // { examId, paperId, examCenterId, scheduledStart, scheduledEnd, config }

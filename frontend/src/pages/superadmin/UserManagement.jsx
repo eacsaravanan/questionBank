@@ -1,11 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { Users, UserPlus, Pencil, Ban, RotateCcw, X, Check } from 'lucide-react';
+import { Users, UserPlus, Pencil, Ban, RotateCcw, X, Check, Trash2 } from 'lucide-react';
 import AppShell from '../../components/AppShell.jsx';
 import { PageHeader, Card, Button, Badge } from '../../components/ui.jsx';
 import { SUPER_ADMIN_NAV } from './nav.js';
 import api from '../../api/client.js';
+import { useToast, apiErrorMessage } from '../../components/Toast.jsx';
+import { useConfirm } from '../../components/ConfirmDialog.jsx';
 
 function EditUserRow({ user, roles, onCancel, onSaved }) {
+  const toast = useToast();
   const [fullName, setFullName] = useState(user.fullName);
   const [email, setEmail] = useState(user.email);
   const [roleIds, setRoleIds] = useState(
@@ -18,10 +21,17 @@ function EditUserRow({ user, roles, onCancel, onSaved }) {
   }
 
   async function save() {
+    if (!fullName.trim() || !email.trim()) {
+      toast.warning('Name and email are required.');
+      return;
+    }
     setSaving(true);
     try {
-      await api.patch(`/users/${user.id}`, { fullName, email, roleIds });
+      await api.patch(`/users/${user.id}`, { fullName: fullName.trim(), email: email.trim(), roleIds });
+      toast.success(`${fullName.trim()} updated.`);
       onSaved();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not save changes.'));
     } finally {
       setSaving(false);
     }
@@ -72,6 +82,8 @@ function EditUserRow({ user, roles, onCancel, onSaved }) {
 }
 
 export default function UserManagement() {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [users, setUsers] = useState([]);
   const [roles, setRoles] = useState([]);
   const [form, setForm] = useState({ username: '', email: '', fullName: '', employeeCode: '', roleIds: [] });
@@ -84,15 +96,27 @@ export default function UserManagement() {
     setUsers(u.data);
     setRoles(r.data);
   }
-  useEffect(() => { load().catch(() => {}); }, []);
+  useEffect(() => { load().catch((err) => toast.error(apiErrorMessage(err, 'Could not load accounts.'))); }, []); // eslint-disable-line
 
   async function handleCreate(e) {
     e.preventDefault();
+    if (!form.fullName.trim() || !form.username.trim() || !form.email.trim()) {
+      toast.warning('Full name, username, and email are required.');
+      return;
+    }
+    if (form.roleIds.length === 0) {
+      toast.warning('Assign at least one role to this account.');
+      return;
+    }
     setCreating(true);
     try {
       await api.post('/users', form);
+      const name = form.fullName;
       setForm({ username: '', email: '', fullName: '', employeeCode: '', roleIds: [] });
       await load();
+      toast.success(`Account created for ${name}. Login credentials have been emailed (or check the audit trail if SMTP isn't configured).`);
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not create the account.'));
     } finally {
       setCreating(false);
     }
@@ -106,16 +130,50 @@ export default function UserManagement() {
   }
 
   async function toggleActive(user) {
+    const willDeactivate = user.isActive;
+    const ok = await confirm({
+      title: willDeactivate ? `Deactivate ${user.fullName}?` : `Reactivate ${user.fullName}?`,
+      message: willDeactivate
+        ? 'They will be immediately signed out and unable to log in. Their history and audit trail stay intact, and you can reactivate at any time.'
+        : 'They will be able to log in again with their existing credentials.',
+      confirmLabel: willDeactivate ? 'Deactivate' : 'Reactivate',
+      tone: willDeactivate ? 'danger' : 'primary',
+    });
+    if (!ok) return;
+
     setBusyId(user.id);
     try {
-      if (user.isActive) {
-        // Soft delete — deactivates rather than hard-deleting, so audit
-        // log entries tied to this account stay intact.
+      if (willDeactivate) {
         await api.delete(`/users/${user.id}`);
+        toast.success(`${user.fullName} deactivated.`);
       } else {
         await api.patch(`/users/${user.id}`, { isActive: true });
+        toast.success(`${user.fullName} reactivated.`);
       }
       await load();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not update this account.'));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function permanentDelete(user) {
+    const ok = await confirm({
+      title: `Permanently delete ${user.fullName}?`,
+      message: 'This cannot be undone. It will only succeed if this account has no questions, papers, reviews, or audit history attached — otherwise deactivate it instead.',
+      confirmLabel: 'Delete permanently',
+      tone: 'danger',
+    });
+    if (!ok) return;
+
+    setBusyId(user.id);
+    try {
+      await api.delete(`/users/${user.id}/permanent`);
+      toast.success(`${user.fullName} permanently deleted.`);
+      await load();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not permanently delete this account.'));
     } finally {
       setBusyId(null);
     }
@@ -203,14 +261,24 @@ export default function UserManagement() {
                           <Pencil size={15} />
                         </button>
                         {u.username !== 'superadmin' && (
-                          <button
-                            onClick={() => toggleActive(u)}
-                            disabled={busyId === u.id}
-                            className={u.isActive ? 'text-ink-900/40 hover:text-alert' : 'text-ink-900/40 hover:text-verdant-600'}
-                            title={u.isActive ? 'Deactivate' : 'Reactivate'}
-                          >
-                            {u.isActive ? <Ban size={15} /> : <RotateCcw size={15} />}
-                          </button>
+                          <>
+                            <button
+                              onClick={() => toggleActive(u)}
+                              disabled={busyId === u.id}
+                              className={u.isActive ? 'text-ink-900/40 hover:text-alert' : 'text-ink-900/40 hover:text-verdant-600'}
+                              title={u.isActive ? 'Deactivate' : 'Reactivate'}
+                            >
+                              {u.isActive ? <Ban size={15} /> : <RotateCcw size={15} />}
+                            </button>
+                            <button
+                              onClick={() => permanentDelete(u)}
+                              disabled={busyId === u.id}
+                              className="text-ink-900/40 hover:text-alert"
+                              title="Delete permanently"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </>
                         )}
                       </div>
                     </td>

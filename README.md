@@ -1,4 +1,4 @@
-# Prashna — Multi-Exam Question Bank & Secure Testing Platform
+# dturn Question Bank — Multi-Exam Question Bank & Secure Testing Platform
 
 A full-stack scaffold for a TNPSC / UPSC / SSC / RRB / Banking / NEET / JEE /
 Engineering / TNUSRB / CLAT question bank platform: dynamic content

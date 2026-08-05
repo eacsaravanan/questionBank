@@ -8,6 +8,7 @@ import SuperAdminDashboard from './pages/superadmin/Dashboard.jsx';
 import UserManagement from './pages/superadmin/UserManagement.jsx';
 import ContentManagement from './pages/superadmin/ContentManagement.jsx';
 import PaperAssembly from './pages/superadmin/PaperAssembly.jsx';
+import ExamScheduling from './pages/superadmin/ExamScheduling.jsx';
 import BrandingSettings from './pages/superadmin/BrandingSettings.jsx';
 import AuditLogViewer from './pages/superadmin/AuditLogViewer.jsx';
 import SmtpSettings from './pages/superadmin/SmtpSettings.jsx';
@@ -31,7 +32,7 @@ export default function App() {
       <Route path="/super-admin/users" element={guarded(['Super Admin'], <UserManagement />)} />
       <Route path="/super-admin/content" element={guarded(['Super Admin'], <ContentManagement />)} />
       <Route path="/super-admin/papers" element={guarded(['Super Admin'], <PaperAssembly />)} />
-      <Route path="/super-admin/schedule" element={guarded(['Super Admin'], <PaperAssembly />)} />
+      <Route path="/super-admin/schedule" element={guarded(['Super Admin'], <ExamScheduling />)} />
       <Route path="/super-admin/branding" element={guarded(['Super Admin'], <BrandingSettings />)} />
       <Route path="/super-admin/audit" element={guarded(['Super Admin'], <AuditLogViewer />)} />
       <Route path="/super-admin/smtp" element={guarded(['Super Admin'], <SmtpSettings />)} />

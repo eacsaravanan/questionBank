@@ -4,25 +4,46 @@ import AppShell from '../../components/AppShell.jsx';
 import { PageHeader, Card, Button } from '../../components/ui.jsx';
 import { SUPER_ADMIN_NAV as NAV } from './nav.js';
 import api from '../../api/client.js';
+import { useToast, apiErrorMessage } from '../../components/Toast.jsx';
 
 export default function SystemSettings() {
+  const toast = useToast();
   const [exams, setExams] = useState([]);
   const [configs, setConfigs] = useState([]);
+  const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({
     examId: '', name: '', totalQuestions: 100, totalMarks: 100, qualifyingMarks: '',
     negativeMarking: false, negativeMarkValue: 0.25, durationMinutes: 120,
   });
 
   useEffect(() => {
-    api.get('/content/exams').then((r) => setExams(r.data)).catch(() => {});
-    api.get('/system-config/exam-master-config').then((r) => setConfigs(r.data)).catch(() => {});
-  }, []);
+    api.get('/content/exams').then((r) => setExams(r.data)).catch((err) => toast.error(apiErrorMessage(err, 'Could not load exams.')));
+    api.get('/system-config/exam-master-config').then((r) => setConfigs(r.data)).catch((err) => toast.error(apiErrorMessage(err, 'Could not load configurations.')));
+  }, []); // eslint-disable-line
 
   async function save(e) {
     e.preventDefault();
-    const payload = { ...form, sections: [] };
-    const { data } = await api.post('/system-config/exam-master-config', payload);
-    setConfigs((c) => [...c, data]);
+    if (!form.examId) { toast.warning('Select an exam.'); return; }
+    if (!form.name.trim()) { toast.warning('Enter a configuration name.'); return; }
+    if (!form.totalQuestions || form.totalQuestions <= 0) { toast.warning('Total questions must be greater than 0.'); return; }
+    if (!form.totalMarks || form.totalMarks <= 0) { toast.warning('Total marks must be greater than 0.'); return; }
+    if (!form.durationMinutes || form.durationMinutes <= 0) { toast.warning('Duration must be greater than 0.'); return; }
+    if (form.qualifyingMarks && Number(form.qualifyingMarks) > form.totalMarks) {
+      toast.warning('Qualifying marks cannot exceed total marks.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const payload = { ...form, sections: [] };
+      const { data } = await api.post('/system-config/exam-master-config', payload);
+      setConfigs((c) => [...c, data]);
+      toast.success(`"${form.name.trim()}" saved.`);
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not save this configuration.'));
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -71,7 +92,7 @@ export default function SystemSettings() {
                 className="w-full px-3 py-2 rounded-lg border border-ink-900/15 text-sm"
                 value={form.negativeMarkValue} onChange={(e) => setForm((f) => ({ ...f, negativeMarkValue: Number(e.target.value) }))} />
             )}
-            <Button variant="primary">Save configuration</Button>
+            <Button variant="primary" disabled={saving}>{saving ? 'Saving…' : 'Save configuration'}</Button>
           </form>
         </Card>
 

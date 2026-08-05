@@ -12,6 +12,9 @@ router.put('/smtp', requirePermission('system.configure'), async (req, res, next
   try {
     const { host, port, secure, username, password, fromAddress } = req.body;
 
+    // If the password field was left blank, carry forward whatever
+    // encryptedPassword is already stored rather than dropping it —
+    // "leave blank to keep it" needs to actually be true.
     let encryptedPassword;
     if (password) {
       encryptedPassword = encryptField(password);

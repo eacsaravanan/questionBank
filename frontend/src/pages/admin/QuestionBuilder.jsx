@@ -1,8 +1,10 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { LayoutDashboard, PenSquare, FileStack, Languages, ScanText, Keyboard, Trash2, CheckCircle2 } from 'lucide-react';
 import AppShell from '../../components/AppShell.jsx';
 import { PageHeader, Card, Button, Badge } from '../../components/ui.jsx';
 import api from '../../api/client.js';
+import { useToast, apiErrorMessage } from '../../components/Toast.jsx';
+import { useConfirm } from '../../components/ConfirmDialog.jsx';
 
 const NAV = [
   { to: '/admin', label: 'Overview', icon: LayoutDashboard },
@@ -11,6 +13,7 @@ const NAV = [
 ];
 
 function LanguageField({ label, value, onChange, tamilAssist }) {
+  const toast = useToast();
   const [tanglish, setTanglish] = useState('');
   const [converting, setConverting] = useState(false);
 
@@ -21,6 +24,8 @@ function LanguageField({ label, value, onChange, tamilAssist }) {
       const { data } = await api.post('/questions/transliterate', { text: tanglish, targetLanguage: 'ta' });
       onChange((value ? value + ' ' : '') + data.result);
       setTanglish('');
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not convert that text.'));
     } finally {
       setConverting(false);
     }
@@ -57,7 +62,7 @@ function LanguageField({ label, value, onChange, tamilAssist }) {
   );
 }
 
-function QueueItem({ item, onChange, onRemove, onSave }) {
+function QueueItem({ item, subjects, onChange, onRemove, onSave }) {
   return (
     <Card className="p-5">
       <div className="flex items-center justify-between mb-3">
@@ -78,6 +83,19 @@ function QueueItem({ item, onChange, onRemove, onSave }) {
           <Trash2 size={15} />
         </button>
       </div>
+
+      <label className="block text-xs font-medium text-ink-900/70 mb-1">Subject</label>
+      <select
+        className="w-full mb-3 px-3 py-2 rounded-lg border border-ink-900/15 text-sm"
+        value={item.subjectId || ''}
+        onChange={(e) => onChange({ ...item, subjectId: e.target.value })}
+        disabled={item.saved}
+      >
+        <option value="">Select subject…</option>
+        {subjects.map((s) => (
+          <option key={s.id} value={s.id}>{s.examCode} — {s.name}</option>
+        ))}
+      </select>
 
       <LanguageField
         label="Question text — English"
@@ -135,6 +153,7 @@ function makeManualItem() {
   return {
     key: `q-${++keyCounter}`,
     mode: 'MANUAL',
+    subjectId: '',
     englishBody: '',
     tamilBody: '',
     options: [{ label: 'A', text: '', isCorrect: true }, { label: 'B', text: '' }, { label: 'C', text: '' }, { label: 'D', text: '' }],
@@ -143,17 +162,44 @@ function makeManualItem() {
 }
 
 export default function QuestionBuilder() {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [queue, setQueue] = useState([makeManualItem()]);
+  const [subjects, setSubjects] = useState([]);
   const [ocrBusy, setOcrBusy] = useState(false);
-  const [ocrError, setOcrError] = useState(null);
   const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    api.get('/content/exams')
+      .then((res) => {
+        const flat = res.data.flatMap((exam) =>
+          (exam.subjects || []).map((s) => ({ ...s, examCode: exam.code }))
+        );
+        setSubjects(flat);
+        if (flat.length === 0) {
+          toast.warning('No subjects exist yet — ask your Super Admin to add subjects under Exams & Subjects before preparing questions.');
+        }
+      })
+      .catch((err) => toast.error(apiErrorMessage(err, 'Could not load subjects.')));
+  }, []); // eslint-disable-line
 
   function updateItem(key, updated) {
     setQueue((q) => q.map((item) => (item.key === key ? updated : item)));
   }
-  function removeItem(key) {
-    setQueue((q) => q.filter((item) => item.key !== key));
+
+  async function removeItem(key, item) {
+    if (item.saved) {
+      const ok = await confirm({
+        title: 'Remove this from your working list?',
+        message: 'The question itself has already been saved and submitted — this only removes it from view here, it does not delete it.',
+        confirmLabel: 'Remove from list',
+        tone: 'primary',
+      });
+      if (!ok) return;
+    }
+    setQueue((q) => q.filter((i) => i.key !== key));
   }
+
   function addManual() {
     setQueue((q) => [...q, makeManualItem()]);
   }
@@ -161,7 +207,6 @@ export default function QuestionBuilder() {
   async function handleImageSelected(file) {
     if (!file) return;
     setOcrBusy(true);
-    setOcrError(null);
     try {
       const fd = new FormData();
       fd.append('image', file);
@@ -172,6 +217,7 @@ export default function QuestionBuilder() {
       const newItems = data.questions.map((q) => ({
         key: `q-${++keyCounter}`,
         mode: 'OCR',
+        subjectId: '',
         ocrConfidence: q.ocrConfidence,
         sourceRef: data.sourceRef,
         englishBody: q.questionText,
@@ -183,8 +229,9 @@ export default function QuestionBuilder() {
       }));
 
       setQueue((q) => [...q, ...newItems]);
+      toast.success(`Extracted ${newItems.length} question(s) from the image — review before saving.`);
     } catch (err) {
-      setOcrError(err.response?.data?.message || 'Could not read that image. Try a clearer screenshot, or type this one manually.');
+      toast.error(apiErrorMessage(err, 'Could not read that image. Try a clearer screenshot, or type this one manually.'));
     } finally {
       setOcrBusy(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -192,24 +239,35 @@ export default function QuestionBuilder() {
   }
 
   async function saveItem(item) {
+    if (!item.subjectId) { toast.warning('Select a subject before saving.'); return; }
+    if (!item.englishBody.trim()) { toast.warning('Enter the question text in English.'); return; }
+    const filledOptions = item.options.filter((o) => o.text.trim());
+    if (filledOptions.length < 2) { toast.warning('Enter at least two options.'); return; }
+    if (!item.options.some((o) => o.isCorrect && o.text.trim())) { toast.warning('Mark which option is correct.'); return; }
+
     const payload = {
-      subjectId: undefined, // wire up to a subject picker in a full build
+      subjectId: item.subjectId,
       type: 'SINGLE_MCQ',
       difficulty: 'Medium',
       translations: [
         { languageCode: 'en', body: item.englishBody },
         ...(item.tamilBody ? [{ languageCode: 'ta', body: item.tamilBody }] : []),
       ],
-      options: item.options.map((o) => ({
-        isCorrect: !!o.isCorrect,
-        translations: [{ languageCode: 'en', body: o.text }],
-      })),
+      options: item.options
+        .filter((o) => o.text.trim())
+        .map((o) => ({ isCorrect: !!o.isCorrect, translations: [{ languageCode: 'en', body: o.text }] })),
       preparationMode: item.mode,
       ocrConfidence: item.ocrConfidence,
       ocrSourceRef: item.sourceRef,
     };
-    await api.post('/questions', payload);
-    updateItem(item.key, { ...item, saved: true });
+
+    try {
+      await api.post('/questions', payload);
+      updateItem(item.key, { ...item, saved: true });
+      toast.success('Question saved as draft.');
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not save this question.'));
+    }
   }
 
   return (
@@ -245,7 +303,6 @@ export default function QuestionBuilder() {
             onChange={(e) => handleImageSelected(e.target.files[0])}
           />
           {ocrBusy && <p className="text-xs text-verdant-600 mt-2">Reading image…</p>}
-          {ocrError && <p className="text-xs text-alert mt-2">{ocrError}</p>}
         </Card>
 
         <div className="flex items-center justify-between mb-3">
@@ -262,8 +319,9 @@ export default function QuestionBuilder() {
             <QueueItem
               key={item.key}
               item={item}
+              subjects={subjects}
               onChange={(updated) => updateItem(item.key, updated)}
-              onRemove={() => removeItem(item.key)}
+              onRemove={() => removeItem(item.key, item)}
               onSave={saveItem}
             />
           ))}

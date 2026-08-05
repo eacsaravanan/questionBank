@@ -4,8 +4,12 @@ import AppShell from '../../components/AppShell.jsx';
 import { PageHeader, Card, Button, Badge } from '../../components/ui.jsx';
 import { SUPER_ADMIN_NAV as NAV } from './nav.js';
 import api from '../../api/client.js';
+import { useToast, apiErrorMessage } from '../../components/Toast.jsx';
+import { useConfirm } from '../../components/ConfirmDialog.jsx';
 
 export default function PaperAssembly() {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [papers, setPapers] = useState([]);
   const [approvedQuestions, setApprovedQuestions] = useState([]);
   const [selected, setSelected] = useState(new Set());
@@ -13,50 +17,105 @@ export default function PaperAssembly() {
   const [schedule, setSchedule] = useState({ scheduledStart: '', scheduledEnd: '' });
   const [activePaper, setActivePaper] = useState(null);
   const [releaseInfo, setReleaseInfo] = useState(null);
+  const [busy, setBusy] = useState(false);
 
   async function load() {
-    const [p, q] = await Promise.all([
-      api.get('/question-papers'),
-      api.get('/questions', { params: { status: 'SME_APPROVED' } }),
-    ]);
-    setPapers(p.data);
-    setApprovedQuestions(q.data.items);
+    try {
+      const [p, q] = await Promise.all([
+        api.get('/question-papers'),
+        api.get('/questions', { params: { status: 'SME_APPROVED' } }),
+      ]);
+      setPapers(p.data);
+      setApprovedQuestions(q.data.items);
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not load question papers.'));
+    }
   }
-  useEffect(() => { load().catch(() => {}); }, []);
+  useEffect(() => { load(); }, []); // eslint-disable-line
 
   function toggle(id) {
     setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   }
 
   async function createPaper() {
-    if (!title.trim() || selected.size === 0 || !approvedQuestions.length) return;
-    const examId = approvedQuestions[0].subject.examId;
-    const { data } = await api.post('/question-papers', {
-      examId, title, paperType: 'Mock Test', questionIds: [...selected],
-    });
-    setTitle(''); setSelected(new Set());
-    await load();
-    setActivePaper(data);
+    if (!title.trim()) { toast.warning('Enter a paper title.'); return; }
+    if (selected.size === 0) { toast.warning('Select at least one approved question.'); return; }
+    setBusy(true);
+    try {
+      const examId = approvedQuestions[0].subject.examId;
+      const { data } = await api.post('/question-papers', {
+        examId, title: title.trim(), paperType: 'Mock Test', questionIds: [...selected],
+      });
+      toast.success(`"${title.trim()}" created with ${selected.size} question(s).`);
+      setTitle(''); setSelected(new Set());
+      await load();
+      setActivePaper(data);
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not create the paper.'));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function submitForApproval(paper) {
-    await api.post(`/question-papers/${paper.id}/submit-for-approval`);
-    await load();
+    setBusy(true);
+    try {
+      await api.post(`/question-papers/${paper.id}/submit-for-approval`);
+      toast.success(`"${paper.title}" submitted for approval.`);
+      await load();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not submit for approval.'));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function approveAsSuperAdmin(paper, stage) {
-    await api.post(`/question-papers/${paper.id}/approve`, { stage, action: 'APPROVED' });
-    await load();
+    setBusy(true);
+    try {
+      await api.post(`/question-papers/${paper.id}/approve`, { stage, action: 'APPROVED' });
+      toast.success(`"${paper.title}" approved.`);
+      await load();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not approve this paper.'));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function scheduleExam(paper) {
-    const { data } = await api.post('/exam-schedules', {
-      examId: paper.examId,
-      paperId: paper.id,
-      scheduledStart: schedule.scheduledStart,
-      scheduledEnd: schedule.scheduledEnd,
+    if (!schedule.scheduledStart || !schedule.scheduledEnd) {
+      toast.warning('Pick both a start and end time.');
+      return;
+    }
+    if (new Date(schedule.scheduledEnd) <= new Date(schedule.scheduledStart)) {
+      toast.warning('End time must be after the start time.');
+      return;
+    }
+    const ok = await confirm({
+      title: 'Schedule this exam?',
+      message: `"${paper.title}" will release automatically at the start time you set. This can't be undone once candidates are registered.`,
+      confirmLabel: 'Schedule',
+      tone: 'primary',
     });
-    setReleaseInfo(data);
+    if (!ok) return;
+
+    setBusy(true);
+    try {
+      const { data } = await api.post('/exam-schedules', {
+        examId: paper.examId,
+        paperId: paper.id,
+        scheduledStart: schedule.scheduledStart,
+        scheduledEnd: schedule.scheduledEnd,
+      });
+      setReleaseInfo(data);
+      toast.success('Exam scheduled. Register candidates from the Exam Scheduling page.');
+      await load();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not schedule this exam.'));
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -82,13 +141,14 @@ export default function PaperAssembly() {
             ))}
             {approvedQuestions.length === 0 && <li className="px-3 py-4 text-sm text-ink-900/40">No SME-approved questions waiting yet.</li>}
           </ul>
-          <Button variant="primary" onClick={createPaper} disabled={!title || selected.size === 0}>
+          <Button variant="primary" onClick={createPaper} disabled={busy || !title.trim() || selected.size === 0}>
             Create paper with {selected.size} question{selected.size !== 1 && 's'}
           </Button>
         </Card>
 
         <Card className="p-6">
           <h2 className="font-display font-semibold text-ink-900 text-sm mb-4">All papers</h2>
+          {papers.length === 0 && <p className="text-sm text-ink-900/40">No papers created yet.</p>}
           <ul className="space-y-2">
             {papers.map((p) => (
               <li key={p.id} className="border border-ink-900/10 rounded-lg p-3">
@@ -97,10 +157,10 @@ export default function PaperAssembly() {
                   <Badge tone={p.status === 'APPROVED' ? 'verdant' : 'gold'}>{p.status.replaceAll('_', ' ')}</Badge>
                 </div>
                 <div className="flex gap-2 flex-wrap">
-                  {p.status === 'DRAFT' && <Button variant="ghost" onClick={() => submitForApproval(p)}><span className="flex items-center gap-1 text-xs"><Send size={12}/> Submit for approval</span></Button>}
-                  {p.status === 'PENDING_SME_APPROVAL' && <Button variant="ghost" onClick={() => approveAsSuperAdmin(p, 'SME')}>Approve (as SME stage)</Button>}
-                  {p.status === 'PENDING_SUPER_ADMIN_APPROVAL' && <Button variant="ghost" onClick={() => approveAsSuperAdmin(p, 'SUPER_ADMIN')}>Final approve</Button>}
-                  {p.status === 'APPROVED' && <Button variant="gold" onClick={() => setActivePaper(p)}><span className="flex items-center gap-1 text-xs"><CalendarClock size={12}/> Schedule</span></Button>}
+                  {p.status === 'DRAFT' && <Button variant="ghost" disabled={busy} onClick={() => submitForApproval(p)}><span className="flex items-center gap-1 text-xs"><Send size={12}/> Submit for approval</span></Button>}
+                  {p.status === 'PENDING_SME_APPROVAL' && <Button variant="ghost" disabled={busy} onClick={() => approveAsSuperAdmin(p, 'SME')}>Approve (as SME stage)</Button>}
+                  {p.status === 'PENDING_SUPER_ADMIN_APPROVAL' && <Button variant="ghost" disabled={busy} onClick={() => approveAsSuperAdmin(p, 'SUPER_ADMIN')}>Final approve</Button>}
+                  {p.status === 'APPROVED' && <Button variant="gold" disabled={busy} onClick={() => setActivePaper(p)}><span className="flex items-center gap-1 text-xs"><CalendarClock size={12}/> Schedule</span></Button>}
                 </div>
               </li>
             ))}
@@ -118,7 +178,7 @@ export default function PaperAssembly() {
               <input type="datetime-local" className="px-3 py-2 rounded-lg border border-ink-900/15 text-sm"
                 value={schedule.scheduledEnd} onChange={(e) => setSchedule((s) => ({ ...s, scheduledEnd: e.target.value }))} />
             </div>
-            <Button variant="primary" onClick={() => scheduleExam(activePaper)}>Schedule this exam</Button>
+            <Button variant="primary" onClick={() => scheduleExam(activePaper)} disabled={busy}>Schedule this exam</Button>
 
             {releaseInfo && (
               <div className="mt-4 p-3 bg-alert/5 border border-alert/25 rounded-lg text-xs">

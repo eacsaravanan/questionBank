@@ -4,22 +4,38 @@ import AppShell from '../../components/AppShell.jsx';
 import { PageHeader, Card, Button } from '../../components/ui.jsx';
 import { SUPER_ADMIN_NAV as NAV } from './nav.js';
 import api from '../../api/client.js';
+import { useToast, apiErrorMessage } from '../../components/Toast.jsx';
 
 export default function SmtpSettings() {
+  const toast = useToast();
   const [form, setForm] = useState({ host: '', port: 587, secure: false, username: '', password: '', fromAddress: '' });
-  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     api.get('/system-config/smtp').then((res) => {
       if (res.data) setForm((f) => ({ ...f, ...res.data, password: '' }));
-    }).catch(() => {});
-  }, []);
+    }).catch((err) => toast.error(apiErrorMessage(err, 'Could not load SMTP settings.')));
+  }, []); // eslint-disable-line
 
   async function save(e) {
     e.preventDefault();
-    await api.put('/system-config/smtp', form);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
+    if (!form.host.trim() || !form.fromAddress.trim()) {
+      toast.warning('Host and From address are required.');
+      return;
+    }
+    if (!form.port || form.port < 1 || form.port > 65535) {
+      toast.warning('Enter a valid port number.');
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.put('/system-config/smtp', form);
+      toast.success('SMTP configuration saved.');
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not save SMTP settings.'));
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -50,13 +66,13 @@ export default function SmtpSettings() {
               value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} />
             <input placeholder="From address, e.g. no-reply@yourinstitute.edu" className="w-full px-3 py-2 rounded-lg border border-ink-900/15 text-sm"
               value={form.fromAddress} onChange={(e) => setForm((f) => ({ ...f, fromAddress: e.target.value }))} />
-            <Button variant="primary">Save SMTP configuration</Button>
-            {saved && <p className="text-verdant-600 text-sm">Saved.</p>}
+            <Button variant="primary" disabled={saving}>{saving ? 'Saving…' : 'Save SMTP configuration'}</Button>
           </form>
         </Card>
         <p className="text-xs text-ink-900/40 mt-4">
           The password/API key is encrypted before it's stored and is never shown again in the UI —
-          only re-entered if you need to change it.
+          only re-entered if you need to change it. Port 587 pairs with "Use TLS" unchecked (STARTTLS);
+          port 465 pairs with "Use TLS" checked.
         </p>
       </div>
     </AppShell>

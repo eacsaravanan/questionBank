@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { Palette, EyeOff, Image as ImageIcon, Star } from 'lucide-react';
+import { Palette, EyeOff, Image as ImageIcon, Star, Trash2 } from 'lucide-react';
 import AppShell from '../../components/AppShell.jsx';
 import { PageHeader, Card, Button, Badge } from '../../components/ui.jsx';
 import { SUPER_ADMIN_NAV as NAV } from './nav.js';
 import api from '../../api/client.js';
+import { useToast, apiErrorMessage } from '../../components/Toast.jsx';
+import { useConfirm } from '../../components/ConfirmDialog.jsx';
 
 const BLANK = {
   label: '', instituteName: '', address: '', contactNumber: '', contactEmail: '', website: '',
@@ -14,17 +16,20 @@ const BLANK = {
 };
 
 export default function BrandingSettings() {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [profiles, setProfiles] = useState([]);
   const [form, setForm] = useState(BLANK);
   const [editingId, setEditingId] = useState(null);
   const [logoFile, setLogoFile] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [busyDeleteId, setBusyDeleteId] = useState(null);
 
   async function load() {
     const { data } = await api.get('/branding-profiles');
     setProfiles(data);
   }
-  useEffect(() => { load().catch(() => {}); }, []);
+  useEffect(() => { load().catch((err) => toast.error(apiErrorMessage(err, 'Could not load branding profiles.'))); }, []); // eslint-disable-line
 
   function selectProfile(p) {
     setEditingId(p.id);
@@ -40,6 +45,10 @@ export default function BrandingSettings() {
 
   async function handleSave(e) {
     e.preventDefault();
+    if (!form.label.trim()) {
+      toast.warning('Give this profile a name.');
+      return;
+    }
     setSaving(true);
     try {
       let saved;
@@ -53,10 +62,35 @@ export default function BrandingSettings() {
         fd.append('logo', logoFile);
         await api.post(`/branding-profiles/${saved.id}/logo`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
       }
+      toast.success(`"${form.label.trim()}" saved.`);
       await load();
       newProfile();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not save this profile.'));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function deleteProfile(p) {
+    const ok = await confirm({
+      title: `Delete "${p.label}"?`,
+      message: 'Any question paper currently set to use this profile will fall back to the tenant default. This cannot be undone.',
+      confirmLabel: 'Delete',
+      tone: 'danger',
+    });
+    if (!ok) return;
+
+    setBusyDeleteId(p.id);
+    try {
+      await api.delete(`/branding-profiles/${p.id}`);
+      toast.success(`"${p.label}" deleted.`);
+      if (editingId === p.id) newProfile();
+      await load();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not delete this profile.'));
+    } finally {
+      setBusyDeleteId(null);
     }
   }
 
@@ -72,10 +106,10 @@ export default function BrandingSettings() {
           </div>
           <ul className="space-y-2">
             {profiles.map((p) => (
-              <li key={p.id}>
+              <li key={p.id} className="flex items-center gap-1">
                 <button
                   onClick={() => selectProfile(p)}
-                  className={`w-full text-left px-3 py-2 rounded-lg border text-sm flex items-center justify-between ${
+                  className={`flex-1 text-left px-3 py-2 rounded-lg border text-sm flex items-center justify-between ${
                     editingId === p.id ? 'border-gold-500 bg-gold-500/5' : 'border-ink-900/10 hover:border-ink-900/25'
                   }`}
                 >
@@ -84,6 +118,14 @@ export default function BrandingSettings() {
                     {p.label}
                   </span>
                   {p.confidentialMode && <Badge tone="alert">Confidential</Badge>}
+                </button>
+                <button
+                  onClick={() => deleteProfile(p)}
+                  disabled={busyDeleteId === p.id}
+                  className="text-ink-900/30 hover:text-alert p-2"
+                  title="Delete profile"
+                >
+                  <Trash2 size={14} />
                 </button>
               </li>
             ))}
