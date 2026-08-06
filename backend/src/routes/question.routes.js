@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../config/db.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
-import { tanglishToTamil } from '../utils/transliterate.js';
+import { tanglishToTamil, tanglishToTamilWordVariants } from '../utils/transliterate.js';
 import { notifyUser } from '../utils/notify.js';
 
 const router = Router();
@@ -15,6 +15,14 @@ router.post('/transliterate', (req, res) => {
     return res.status(400).json({ error: 'UNSUPPORTED_LANGUAGE', message: 'Only ta (Tamil) supported in v1' });
   }
   res.json({ result: tanglishToTamil(text) });
+});
+
+// POST /api/questions/transliterate/word  { word } -> up to 3 candidate Tamil readings
+// for a single Latin word, used by the live-as-you-type Tamil input's
+// suggestion picker.
+router.post('/transliterate/word', (req, res) => {
+  const { word = '' } = req.body;
+  res.json({ candidates: tanglishToTamilWordVariants(word) });
 });
 
 async function nextHumanCode(subjectCode, chapterCode = 'GEN') {

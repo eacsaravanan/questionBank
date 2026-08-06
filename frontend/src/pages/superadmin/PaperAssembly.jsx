@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { FileCheck2, CalendarClock, Send } from 'lucide-react';
+import { FileCheck2, CalendarClock, Send, FileDown } from 'lucide-react';
 import AppShell from '../../components/AppShell.jsx';
 import { PageHeader, Card, Button, Badge } from '../../components/ui.jsx';
 import { SUPER_ADMIN_NAV as NAV } from './nav.js';
 import api from '../../api/client.js';
 import { useToast, apiErrorMessage } from '../../components/Toast.jsx';
 import { useConfirm } from '../../components/ConfirmDialog.jsx';
+import ExportPdfModal from '../../components/ExportPdfModal.jsx';
 
 export default function PaperAssembly() {
   const toast = useToast();
@@ -18,6 +19,7 @@ export default function PaperAssembly() {
   const [activePaper, setActivePaper] = useState(null);
   const [releaseInfo, setReleaseInfo] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [exportingPaper, setExportingPaper] = useState(null);
 
   async function load() {
     try {
@@ -161,6 +163,7 @@ export default function PaperAssembly() {
                   {p.status === 'PENDING_SME_APPROVAL' && <Button variant="ghost" disabled={busy} onClick={() => approveAsSuperAdmin(p, 'SME')}>Approve (as SME stage)</Button>}
                   {p.status === 'PENDING_SUPER_ADMIN_APPROVAL' && <Button variant="ghost" disabled={busy} onClick={() => approveAsSuperAdmin(p, 'SUPER_ADMIN')}>Final approve</Button>}
                   {p.status === 'APPROVED' && <Button variant="gold" disabled={busy} onClick={() => setActivePaper(p)}><span className="flex items-center gap-1 text-xs"><CalendarClock size={12}/> Schedule</span></Button>}
+                  <Button variant="ghost" onClick={() => setExportingPaper(p)}><span className="flex items-center gap-1 text-xs"><FileDown size={12}/> Export PDF</span></Button>
                 </div>
               </li>
             ))}
@@ -189,6 +192,10 @@ export default function PaperAssembly() {
             )}
           </Card>
         </div>
+      )}
+
+      {exportingPaper && (
+        <ExportPdfModal paper={exportingPaper} onClose={() => setExportingPaper(null)} />
       )}
     </AppShell>
   );

@@ -19,6 +19,7 @@ import auditRoutes from './routes/audit.routes.js';
 import systemConfigRoutes from './routes/systemConfig.routes.js';
 import brandingRoutes from './routes/branding.routes.js';
 import ocrRoutes from './routes/ocr.routes.js';
+import pdfExportRoutes from './routes/pdfExport.routes.js';
 
 const app = express();
 
@@ -50,6 +51,7 @@ app.use('/api/content', contentRoutes);
 app.use('/api/questions', questionRoutes);
 app.use('/api/questions', ocrRoutes); // adds POST /api/questions/ocr-extract
 app.use('/api/question-papers', questionPaperRoutes);
+app.use('/api/question-papers', pdfExportRoutes); // adds /pdf-font-status and /:id/export-pdf
 app.use('/api/exam-schedules', examRoutes); // includes /attempts/* sub-routes
 app.use('/api/audit-logs', auditRoutes);
 app.use('/api/system-config', systemConfigRoutes);

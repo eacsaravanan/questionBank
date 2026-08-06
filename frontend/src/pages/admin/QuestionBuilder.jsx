@@ -1,66 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { LayoutDashboard, PenSquare, FileStack, Languages, ScanText, Keyboard, Trash2, CheckCircle2 } from 'lucide-react';
+import { ScanText, Keyboard, Trash2, CheckCircle2 } from 'lucide-react';
 import AppShell from '../../components/AppShell.jsx';
 import { PageHeader, Card, Button, Badge } from '../../components/ui.jsx';
+import FormattableInput from '../../components/FormattableInput.jsx';
 import api from '../../api/client.js';
 import { useToast, apiErrorMessage } from '../../components/Toast.jsx';
 import { useConfirm } from '../../components/ConfirmDialog.jsx';
-
-const NAV = [
-  { to: '/admin', label: 'Overview', icon: LayoutDashboard },
-  { to: '/admin/questions', label: 'Question Builder', icon: PenSquare },
-  { to: '/admin/papers', label: 'Assemble Papers', icon: FileStack },
-];
-
-function LanguageField({ label, value, onChange, tamilAssist }) {
-  const toast = useToast();
-  const [tanglish, setTanglish] = useState('');
-  const [converting, setConverting] = useState(false);
-
-  async function handleConvert() {
-    if (!tanglish.trim()) return;
-    setConverting(true);
-    try {
-      const { data } = await api.post('/questions/transliterate', { text: tanglish, targetLanguage: 'ta' });
-      onChange((value ? value + ' ' : '') + data.result);
-      setTanglish('');
-    } catch (err) {
-      toast.error(apiErrorMessage(err, 'Could not convert that text.'));
-    } finally {
-      setConverting(false);
-    }
-  }
-
-  return (
-    <div className="mb-3">
-      <label className="block text-xs font-medium text-ink-900/70 mb-1">{label}</label>
-      <textarea
-        lang={tamilAssist ? 'ta' : undefined}
-        className="w-full px-3 py-2 rounded-lg border border-ink-900/15 focus:border-verdant-500 outline-none text-sm"
-        rows={2}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={tamilAssist ? 'தமிழில் தட்டச்சு செய்யவும் / type in Tamil' : 'Type in English'}
-      />
-      {tamilAssist && (
-        <div className="mt-1.5 flex gap-2">
-          <input
-            className="flex-1 px-3 py-1.5 rounded-lg border border-ink-900/15 text-xs focus:border-gold-500 outline-none"
-            placeholder="Type Tanglish here e.g. 'vanakkam ulagam' — press Convert"
-            value={tanglish}
-            onChange={(e) => setTanglish(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleConvert())}
-          />
-          <Button variant="gold" onClick={handleConvert} disabled={converting}>
-            <span className="flex items-center gap-1.5 text-xs">
-              <Languages size={13} /> {converting ? '…' : 'Convert'}
-            </span>
-          </Button>
-        </div>
-      )}
-    </div>
-  );
-}
+import { ADMIN_NAV as NAV } from './nav.js';
 
 function QueueItem({ item, subjects, onChange, onRemove, onSave }) {
   return (
@@ -76,6 +22,9 @@ function QueueItem({ item, subjects, onChange, onRemove, onSave }) {
           </Badge>
           {item.mode === 'OCR' && typeof item.ocrConfidence === 'number' && (
             <span className="text-xs text-ink-900/40 font-mono">{Math.round(item.ocrConfidence * 100)}% confidence</span>
+          )}
+          {item.mode === 'OCR' && typeof item.ocrConfidence === 'number' && item.ocrConfidence < 0.7 && (
+            <span className="text-xs text-alert">Low confidence — review carefully</span>
           )}
           {item.saved && <Badge tone="verdant"><span className="flex items-center gap-1"><CheckCircle2 size={11} /> Saved</span></Badge>}
         </div>
@@ -97,24 +46,25 @@ function QueueItem({ item, subjects, onChange, onRemove, onSave }) {
         ))}
       </select>
 
-      <LanguageField
+      <FormattableInput
         label="Question text — English"
         value={item.englishBody}
         onChange={(v) => onChange({ ...item, englishBody: v })}
       />
-      <LanguageField
+      <FormattableInput
         label="Question text — Tamil"
         value={item.tamilBody}
         onChange={(v) => onChange({ ...item, tamilBody: v })}
-        tamilAssist
+        mode="tamil-live"
       />
 
       <label className="block text-xs font-medium text-ink-900/70 mb-1 mt-2">Options</label>
-      <div className="space-y-1.5">
+      <div className="space-y-3">
         {item.options.map((opt, idx) => (
-          <div key={idx} className="flex items-center gap-2">
+          <div key={idx} className="flex items-start gap-2 p-2.5 rounded-lg border border-ink-900/8">
             <input
               type="radio"
+              className="mt-2.5"
               name={`correct-${item.key}`}
               checked={opt.isCorrect}
               onChange={() =>
@@ -124,17 +74,31 @@ function QueueItem({ item, subjects, onChange, onRemove, onSave }) {
                 })
               }
             />
-            <input
-              className="flex-1 px-2.5 py-1.5 rounded-lg border border-ink-900/15 text-sm"
-              value={opt.text}
-              onChange={(e) =>
-                onChange({
-                  ...item,
-                  options: item.options.map((o, i) => (i === idx ? { ...o, text: e.target.value } : o)),
-                })
-              }
-              placeholder={`Option ${opt.label || idx + 1}`}
-            />
+            <div className="flex-1 grid grid-cols-2 gap-2">
+              <input
+                className="px-2.5 py-1.5 rounded-lg border border-ink-900/15 text-sm"
+                value={opt.text}
+                onChange={(e) =>
+                  onChange({
+                    ...item,
+                    options: item.options.map((o, i) => (i === idx ? { ...o, text: e.target.value } : o)),
+                  })
+                }
+                placeholder={`Option ${opt.label || idx + 1} — English`}
+              />
+              <input
+                lang="ta"
+                className="px-2.5 py-1.5 rounded-lg border border-ink-900/15 text-sm"
+                value={opt.textTamil || ''}
+                onChange={(e) =>
+                  onChange({
+                    ...item,
+                    options: item.options.map((o, i) => (i === idx ? { ...o, textTamil: e.target.value } : o)),
+                  })
+                }
+                placeholder={`Option ${opt.label || idx + 1} — Tamil`}
+              />
+            </div>
           </div>
         ))}
       </div>
@@ -156,7 +120,12 @@ function makeManualItem() {
     subjectId: '',
     englishBody: '',
     tamilBody: '',
-    options: [{ label: 'A', text: '', isCorrect: true }, { label: 'B', text: '' }, { label: 'C', text: '' }, { label: 'D', text: '' }],
+    options: [
+      { label: 'A', text: '', textTamil: '', isCorrect: true },
+      { label: 'B', text: '', textTamil: '' },
+      { label: 'C', text: '', textTamil: '' },
+      { label: 'D', text: '', textTamil: '' },
+    ],
     saved: false,
   };
 }
@@ -223,13 +192,23 @@ export default function QuestionBuilder() {
         englishBody: q.questionText,
         tamilBody: '',
         options: q.options.length
-          ? q.options.map((o, i) => ({ label: o.label, text: o.text, isCorrect: i === 0 }))
-          : [{ label: 'A', text: '', isCorrect: true }, { label: 'B', text: '' }, { label: 'C', text: '' }, { label: 'D', text: '' }],
+          ? q.options.map((o, i) => ({ label: o.label, text: o.text, textTamil: '', isCorrect: i === 0 }))
+          : [
+              { label: 'A', text: '', textTamil: '', isCorrect: true },
+              { label: 'B', text: '', textTamil: '' },
+              { label: 'C', text: '', textTamil: '' },
+              { label: 'D', text: '', textTamil: '' },
+            ],
         saved: false,
       }));
 
       setQueue((q) => [...q, ...newItems]);
-      toast.success(`Extracted ${newItems.length} question(s) from the image — review before saving.`);
+      const avgConfidence = newItems.reduce((s, i) => s + (i.ocrConfidence || 0), 0) / newItems.length;
+      if (avgConfidence < 0.7) {
+        toast.warning(`Extracted ${newItems.length} question(s), but OCR confidence was low (${Math.round(avgConfidence * 100)}%) — review each one carefully before saving. Watermarks, small print, and subscripted formulas (like K₂Cr₂O₇) are the usual causes.`);
+      } else {
+        toast.success(`Extracted ${newItems.length} question(s) from the image — review before saving.`);
+      }
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Could not read that image. Try a clearer screenshot, or type this one manually.'));
     } finally {
@@ -255,7 +234,13 @@ export default function QuestionBuilder() {
       ],
       options: item.options
         .filter((o) => o.text.trim())
-        .map((o) => ({ isCorrect: !!o.isCorrect, translations: [{ languageCode: 'en', body: o.text }] })),
+        .map((o) => ({
+          isCorrect: !!o.isCorrect,
+          translations: [
+            { languageCode: 'en', body: o.text },
+            ...(o.textTamil?.trim() ? [{ languageCode: 'ta', body: o.textTamil }] : []),
+          ],
+        })),
       preparationMode: item.mode,
       ocrConfidence: item.ocrConfidence,
       ocrSourceRef: item.sourceRef,
@@ -282,7 +267,8 @@ export default function QuestionBuilder() {
           </div>
           <p className="text-xs text-ink-900/50 mb-3">
             Paste a screenshot (Ctrl/Cmd+V) or upload one — a full page with several questions works too;
-            each detected question is added to your queue below for review.
+            each detected question is added to your queue below for review. Watermarks and subscripted
+            formulas reduce accuracy — always review before saving.
           </p>
           <div
             onPaste={(e) => {
@@ -328,9 +314,10 @@ export default function QuestionBuilder() {
         </div>
 
         <p className="text-xs text-ink-900/40 mt-6 leading-relaxed">
-          You can freely mix modes — some questions typed manually, others pulled from a screenshot —
-          within the same session. OCR-extracted text is always editable before saving, and every
-          question is still routed through SME review regardless of how it was authored.
+          Select any text in the English or Tamil fields and use the "x₂" / "x²" buttons above each
+          field to apply real subscript/superscript formatting (e.g. K2Cr2O7 → K₂Cr₂O₇) — this always
+          works, since it's a direct character substitution. The Tamil field converts Tanglish to Tamil
+          automatically as you type each word; click an alternate suggestion chip if it guessed wrong.
         </p>
       </div>
     </AppShell>

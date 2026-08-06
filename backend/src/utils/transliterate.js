@@ -69,9 +69,20 @@ function isTamilAlready(str) {
   return /[\u0B80-\u0BFF]/.test(str);
 }
 
-function transliterateWord(word) {
+function transliterateWord(word, opts = {}) {
   if (isTamilAlready(word)) return word; // don't double-convert
   if (!/^[a-zA-Z]+$/.test(word)) return word; // numbers/punctuation pass through
+
+  // Some Tanglish typists use single "e"/"o" to mean the LONG vowel (ஏ/ஓ)
+  // rather than the short one (எ/ஒ) — both conventions are common, so this
+  // is one axis we vary across candidates instead of guessing once.
+  const eoLong = !!opts.eoLong;
+  const vowelSigns = { ...VOWEL_SIGNS };
+  const independentVowels = INDEPENDENT_VOWELS.slice();
+  if (eoLong) {
+    vowelSigns.e = vowelSigns.ee;
+    vowelSigns.o = vowelSigns.oo;
+  }
 
   const lower = word;
   let i = 0;
@@ -98,7 +109,7 @@ function transliterateWord(word) {
         }
       }
       if (matchedVowel) {
-        out += matchedConsonant.tam + VOWEL_SIGNS[matchedVowel];
+        out += matchedConsonant.tam + vowelSigns[matchedVowel];
         i += matchedVowel.length;
       } else {
         // consonant with no vowel following -> check if end of word or another consonant
@@ -110,9 +121,9 @@ function transliterateWord(word) {
 
     // No consonant matched — try an independent vowel
     let matchedVowel = null;
-    for (const [rom, tam] of INDEPENDENT_VOWELS) {
+    for (const [rom, tam] of independentVowels) {
       if (lower.substr(i, rom.length).toLowerCase() === rom.toLowerCase()) {
-        matchedVowel = { rom, tam };
+        matchedVowel = { rom, tam: (eoLong && rom === 'e') ? 'ஏ' : (eoLong && rom === 'o') ? 'ஓ' : tam };
         break;
       }
     }
@@ -128,6 +139,22 @@ function transliterateWord(word) {
   }
 
   return out;
+}
+
+/**
+ * Generate up to 3 differing candidate readings for one Tanglish word, for
+ * a suggestion picker. This is still the same deterministic rule engine —
+ * not a trained predictive model — just run with the two conventions
+ * typists commonly use for ambiguous "e"/"o" vowels. Genuinely novel
+ * ambiguities (which consonant a typist meant, etc.) aren't covered; this
+ * catches the single most common source of "that's not what I meant"
+ * for this ruleset.
+ */
+export function tanglishToTamilWordVariants(word) {
+  const variants = [transliterateWord(word, { eoLong: false })];
+  const long = transliterateWord(word, { eoLong: true });
+  if (long !== variants[0]) variants.push(long);
+  return variants.slice(0, 3);
 }
 
 /**

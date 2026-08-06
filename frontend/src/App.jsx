@@ -15,6 +15,7 @@ import SmtpSettings from './pages/superadmin/SmtpSettings.jsx';
 import SystemSettings from './pages/superadmin/SystemSettings.jsx';
 
 import QuestionBuilder from './pages/admin/QuestionBuilder.jsx';
+import AdminPapers from './pages/admin/AdminPapers.jsx';
 import ReviewQueue from './pages/sme/ReviewQueue.jsx';
 import ExamGate from './pages/student/ExamGate.jsx';
 import ExamRoom from './pages/student/ExamRoom.jsx';
@@ -38,7 +39,9 @@ export default function App() {
       <Route path="/super-admin/smtp" element={guarded(['Super Admin'], <SmtpSettings />)} />
       <Route path="/super-admin/settings" element={guarded(['Super Admin'], <SystemSettings />)} />
 
-      <Route path="/admin/*" element={guarded(['Admin', 'Super Admin'], <QuestionBuilder />)} />
+      <Route path="/admin" element={guarded(['Admin', 'Super Admin'], <QuestionBuilder />)} />
+      <Route path="/admin/questions" element={guarded(['Admin', 'Super Admin'], <QuestionBuilder />)} />
+      <Route path="/admin/papers" element={guarded(['Admin', 'Super Admin'], <AdminPapers />)} />
       <Route path="/sme/*" element={guarded(['SME', 'Paper Approver', 'Super Admin'], <ReviewQueue />)} />
 
       <Route path="/exam/:examCode" element={<ExamGate />} />
