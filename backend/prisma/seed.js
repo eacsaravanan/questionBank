@@ -17,6 +17,7 @@ const PERMISSIONS = [
   ['audit.read', 'Audit & Compliance'], ['audit.export', 'Audit & Compliance'],
   ['system.configure', 'System Configuration'],
   ['branding.manage', 'White-labeling'],
+  ['ocr.configure', 'System Configuration'],
 ];
 
 const EXAMS = [
@@ -42,64 +43,54 @@ async function main() {
   }
 
   console.log('Seeding system roles...');
-  const superAdminRole = await prisma.role.upsert({
-    where: { name: 'Super Admin' },
-    update: {},
-    create: {
-      name: 'Super Admin',
-      description: 'Full system access — configures roles, approves final papers, schedules exams.',
-      isSystem: true,
-      permissions: { create: Object.values(permissionRecords).map((p) => ({ permissionId: p.id })) },
-    },
-  });
 
-  await prisma.role.upsert({
-    where: { name: 'Admin' },
-    update: {},
-    create: {
-      name: 'Admin',
-      description: 'Question Preparator — builds question banks and assembles papers.',
-      permissions: {
-        create: ['content.read', 'question.create', 'question.read', 'question.update', 'paper.create', 'paper.read']
-          .map((code) => ({ permissionId: permissionRecords[code].id })),
-      },
-    },
-  });
+  // Upserts the role itself, then SYNCS its permission set to exactly the
+  // list given — including on re-runs. Without this, re-running `npm run
+  // seed` after a permissions change (like this one) would silently leave
+  // existing roles with their old, stale permission set forever, since
+  // Prisma's upsert `update: {}` only touches the role's own fields, not
+  // its relations.
+  async function syncRole(name, description, permissionCodes, isSystem = false) {
+    const role = await prisma.role.upsert({
+      where: { name },
+      update: { description },
+      create: { name, description, isSystem },
+    });
+    await prisma.rolePermission.deleteMany({ where: { roleId: role.id } });
+    if (permissionCodes.length > 0) {
+      await prisma.rolePermission.createMany({
+        data: permissionCodes.map((code) => ({ roleId: role.id, permissionId: permissionRecords[code].id })),
+      });
+    }
+    return role;
+  }
 
-  await prisma.role.upsert({
-    where: { name: 'SME' },
-    update: {},
-    create: {
-      name: 'SME',
-      description: 'Subject Matter Expert — reviews and approves questions for their assigned subject(s).',
-      permissions: {
-        create: ['content.read', 'question.read', 'question.review']
-          .map((code) => ({ permissionId: permissionRecords[code].id })),
-      },
-    },
-  });
+  const superAdminRole = await syncRole(
+    'Super Admin',
+    'Full system access — configures roles, approves final papers, schedules exams.',
+    Object.keys(permissionRecords),
+    true
+  );
 
-  await prisma.role.upsert({
-    where: { name: 'Paper Approver' },
-    update: {},
-    create: {
-      name: 'Paper Approver',
-      description: 'Approves assembled question papers (SME stage of the paper workflow).',
-      permissions: {
-        create: ['paper.read', 'paper.approve'].map((code) => ({ permissionId: permissionRecords[code].id })),
-      },
-    },
-  });
+  await syncRole(
+    'Admin',
+    'Question Preparator — builds question banks and assembles papers.',
+    ['content.read', 'question.create', 'question.read', 'question.update', 'question.delete', 'paper.create', 'paper.read']
+  );
 
-  await prisma.role.upsert({
-    where: { name: 'Aspirant' },
-    update: {},
-    create: {
-      name: 'Aspirant',
-      description: 'End-user candidate taking exams.',
-      permissions: { create: [] },
-    },
-  });
+  await syncRole(
+    'SME',
+    'Subject Matter Expert — reviews and approves questions for their assigned subject(s).',
+    ['content.read', 'question.read', 'question.review']
+  );
+
+  await syncRole(
+    'Paper Approver',
+    'Approves assembled question papers (SME stage of the paper workflow).',
+    ['paper.read', 'paper.approve']
+  );
+
+  await syncRole('Aspirant', 'End-user candidate taking exams.', []);
 
   console.log('Seeding exams...');
   for (const [code, name] of EXAMS) {

@@ -8,6 +8,13 @@ export function notFoundHandler(req, res) {
 export function errorHandler(err, req, res, next) {
   logger.error({ err, path: req.path, method: req.method }, 'Unhandled error');
 
+  if (err.message === 'UNSUPPORTED_FILE_TYPE') {
+    return res.status(400).json({
+      error: 'UNSUPPORTED_FILE_TYPE',
+      message: 'Unsupported file type for this upload.',
+    });
+  }
+
   // Prisma unique-constraint violations are a routine, expected case (duplicate
   // username/email/employee code) — surface a clear 409 instead of a blank 500.
   if (err.code === 'P2002') {

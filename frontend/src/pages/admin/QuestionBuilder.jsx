@@ -8,7 +8,7 @@ import { useToast, apiErrorMessage } from '../../components/Toast.jsx';
 import { useConfirm } from '../../components/ConfirmDialog.jsx';
 import { ADMIN_NAV as NAV } from './nav.js';
 
-function QueueItem({ item, subjects, onChange, onRemove, onSave }) {
+function QueueItem({ item, subjects, onChange, onRemove, onSave, onSubmitReview }) {
   return (
     <Card className="p-5">
       <div className="flex items-center justify-between mb-3">
@@ -103,10 +103,16 @@ function QueueItem({ item, subjects, onChange, onRemove, onSave }) {
         ))}
       </div>
 
-      <div className="flex justify-end mt-4">
+      <div className="flex justify-end gap-3 mt-4">
         <Button variant="primary" onClick={() => onSave(item)} disabled={item.saved}>
           {item.saved ? 'Saved' : 'Save question'}
         </Button>
+        {item.saved && !item.submittedForReview && (
+          <Button variant="gold" onClick={() => onSubmitReview(item)}>
+            Submit for review
+          </Button>
+        )}
+        {item.submittedForReview && <Badge tone="gold">Submitted for review</Badge>}
       </div>
     </Card>
   );
@@ -136,6 +142,8 @@ export default function QuestionBuilder() {
   const [queue, setQueue] = useState([makeManualItem()]);
   const [subjects, setSubjects] = useState([]);
   const [ocrBusy, setOcrBusy] = useState(false);
+  const [pendingFile, setPendingFile] = useState(null);
+  const [pageRange, setPageRange] = useState({ fromPage: '', toPage: '', skipPages: '' });
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -173,12 +181,22 @@ export default function QuestionBuilder() {
     setQueue((q) => [...q, makeManualItem()]);
   }
 
-  async function handleImageSelected(file) {
+  function selectPendingFile(file) {
     if (!file) return;
+    setPendingFile(file);
+  }
+
+  async function runExtraction() {
+    if (!pendingFile) return;
     setOcrBusy(true);
     try {
       const fd = new FormData();
-      fd.append('image', file);
+      fd.append('image', pendingFile);
+      if (pendingFile.type === 'application/pdf') {
+        if (pageRange.fromPage) fd.append('fromPage', pageRange.fromPage);
+        if (pageRange.toPage) fd.append('toPage', pageRange.toPage);
+        if (pageRange.skipPages) fd.append('skipPages', pageRange.skipPages);
+      }
       const { data } = await api.post('/questions/ocr-extract', fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
@@ -190,9 +208,9 @@ export default function QuestionBuilder() {
         ocrConfidence: q.ocrConfidence,
         sourceRef: data.sourceRef,
         englishBody: q.questionText,
-        tamilBody: '',
+        tamilBody: q.questionTextTamil || '',
         options: q.options.length
-          ? q.options.map((o, i) => ({ label: o.label, text: o.text, textTamil: '', isCorrect: i === 0 }))
+          ? q.options.map((o, i) => ({ label: o.label, text: o.text, textTamil: o.textTamil || '', isCorrect: i === 0 }))
           : [
               { label: 'A', text: '', textTamil: '', isCorrect: true },
               { label: 'B', text: '', textTamil: '' },
@@ -202,15 +220,26 @@ export default function QuestionBuilder() {
         saved: false,
       }));
 
-      setQueue((q) => [...q, ...newItems]);
-      const avgConfidence = newItems.reduce((s, i) => s + (i.ocrConfidence || 0), 0) / newItems.length;
-      if (avgConfidence < 0.7) {
-        toast.warning(`Extracted ${newItems.length} question(s), but OCR confidence was low (${Math.round(avgConfidence * 100)}%) — review each one carefully before saving. Watermarks, small print, and subscripted formulas (like K₂Cr₂O₇) are the usual causes.`);
+      if (newItems.length === 0) {
+        toast.warning('No question-like content was detected in that file — instructions/front-matter are skipped automatically, so this may mean the file had none, or the layout wasn\'t recognized. Try manual entry for this one.');
       } else {
-        toast.success(`Extracted ${newItems.length} question(s) from the image — review before saving.`);
+        setQueue((q) => [...q, ...newItems]);
+        const confidences = newItems.map((i) => i.ocrConfidence).filter((c) => typeof c === 'number');
+        const avgConfidence = confidences.length ? confidences.reduce((s, c) => s + c, 0) / confidences.length : null;
+        if (avgConfidence !== null && avgConfidence < 0.7) {
+          toast.warning(`Extracted ${newItems.length} question(s), but OCR confidence was low (${Math.round(avgConfidence * 100)}%) — review each one carefully before saving. Watermarks, small print, and subscripted formulas (like K₂Cr₂O₇) are the usual causes.`);
+        } else {
+          toast.success(`Extracted ${newItems.length} question(s) — review before saving.`);
+        }
       }
+      setPendingFile(null);
+      setPageRange({ fromPage: '', toPage: '', skipPages: '' });
     } catch (err) {
-      toast.error(apiErrorMessage(err, 'Could not read that image. Try a clearer screenshot, or type this one manually.'));
+      if (err.response?.data?.error === 'SCANNED_PDF_NOT_SUPPORTED') {
+        toast.error(err.response.data.message);
+      } else {
+        toast.error(apiErrorMessage(err, 'Could not read that file. Try a clearer file, or type this one manually.'));
+      }
     } finally {
       setOcrBusy(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -247,11 +276,21 @@ export default function QuestionBuilder() {
     };
 
     try {
-      await api.post('/questions', payload);
-      updateItem(item.key, { ...item, saved: true });
+      const { data } = await api.post('/questions', payload);
+      updateItem(item.key, { ...item, saved: true, questionId: data.id });
       toast.success('Question saved as draft.');
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Could not save this question.'));
+    }
+  }
+
+  async function submitReview(item) {
+    try {
+      await api.post(`/questions/${item.questionId}/submit-for-review`);
+      updateItem(item.key, { ...item, submittedForReview: true });
+      toast.success('Submitted for SME review.');
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not submit for review.'));
     }
   }
 
@@ -263,32 +302,55 @@ export default function QuestionBuilder() {
         <Card className="p-5 mb-6 border-dashed">
           <div className="flex items-center gap-2 mb-3">
             <ScanText size={16} className="text-verdant-600" />
-            <h2 className="font-display font-semibold text-ink-900 text-sm">Add from screenshot (OCR)</h2>
+            <h2 className="font-display font-semibold text-ink-900 text-sm">Add from screenshot, PDF, or Word document</h2>
           </div>
           <p className="text-xs text-ink-900/50 mb-3">
-            Paste a screenshot (Ctrl/Cmd+V) or upload one — a full page with several questions works too;
-            each detected question is added to your queue below for review. Watermarks and subscripted
-            formulas reduce accuracy — always review before saving.
+            Paste a screenshot (Ctrl/Cmd+V) or upload an image, PDF, or .docx — multi-page documents work
+            too; each detected question is added to your queue below for review. Instructions and
+            non-question text are filtered out automatically. Watermarks, small print, and scanned
+            (non-digital) PDFs reduce accuracy — always review before saving.
           </p>
           <div
             onPaste={(e) => {
               const file = [...e.clipboardData.items].find((i) => i.type.startsWith('image/'))?.getAsFile();
-              if (file) handleImageSelected(file);
+              if (file) selectPendingFile(file);
             }}
             tabIndex={0}
             className="border-2 border-dashed border-ink-900/15 rounded-lg p-6 text-center text-sm text-ink-900/40 focus:border-gold-500 outline-none cursor-pointer"
             onClick={() => fileInputRef.current?.click()}
           >
-            Click to upload, or click here and paste (Ctrl/Cmd+V) an image
+            {pendingFile ? `Selected: ${pendingFile.name}` : 'Click to upload, or click here and paste (Ctrl/Cmd+V) an image'}
           </div>
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/png,image/jpeg,image/webp"
+            accept="image/png,image/jpeg,image/webp,application/pdf,.docx"
             className="hidden"
-            onChange={(e) => handleImageSelected(e.target.files[0])}
+            onChange={(e) => selectPendingFile(e.target.files[0])}
           />
-          {ocrBusy && <p className="text-xs text-verdant-600 mt-2">Reading image…</p>}
+
+          {pendingFile && pendingFile.type === 'application/pdf' && (
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              <input placeholder="From page" type="number" min="1"
+                className="px-2.5 py-1.5 rounded-lg border border-ink-900/15 text-xs"
+                value={pageRange.fromPage} onChange={(e) => setPageRange((p) => ({ ...p, fromPage: e.target.value }))} />
+              <input placeholder="To page" type="number" min="1"
+                className="px-2.5 py-1.5 rounded-lg border border-ink-900/15 text-xs"
+                value={pageRange.toPage} onChange={(e) => setPageRange((p) => ({ ...p, toPage: e.target.value }))} />
+              <input placeholder="Skip pages, e.g. 1, 10, 100"
+                className="px-2.5 py-1.5 rounded-lg border border-ink-900/15 text-xs"
+                value={pageRange.skipPages} onChange={(e) => setPageRange((p) => ({ ...p, skipPages: e.target.value }))} />
+            </div>
+          )}
+
+          {pendingFile && (
+            <div className="flex justify-end gap-2 mt-3">
+              <Button variant="ghost" onClick={() => setPendingFile(null)} disabled={ocrBusy}>Clear</Button>
+              <Button variant="gold" onClick={runExtraction} disabled={ocrBusy}>
+                {ocrBusy ? 'Extracting…' : 'Start extraction'}
+              </Button>
+            </div>
+          )}
         </Card>
 
         <div className="flex items-center justify-between mb-3">
@@ -309,6 +371,7 @@ export default function QuestionBuilder() {
               onChange={(updated) => updateItem(item.key, updated)}
               onRemove={() => removeItem(item.key, item)}
               onSave={saveItem}
+              onSubmitReview={submitReview}
             />
           ))}
         </div>

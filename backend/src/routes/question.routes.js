@@ -30,14 +30,15 @@ async function nextHumanCode(subjectCode, chapterCode = 'GEN') {
   return `${subjectCode}-${chapterCode}-${String(count + 1).padStart(6, '0')}`;
 }
 
-// GET /api/questions?subjectId=&status=&page=
+// GET /api/questions?subjectId=&status=&page=&mine=true
 router.get('/', requirePermission('question.read'), async (req, res, next) => {
   try {
-    const { subjectId, status, chapterId, page = 1, pageSize = 25 } = req.query;
+    const { subjectId, status, chapterId, page = 1, pageSize = 25, mine } = req.query;
     const where = {
       ...(subjectId && { subjectId }),
       ...(status && { status }),
       ...(chapterId && { chapterId }),
+      ...(mine === 'true' && { createdById: req.user.id }),
     };
     const [items, total] = await Promise.all([
       prisma.question.findMany({
@@ -195,10 +196,81 @@ router.post('/:id/approve', requirePermission('question.approve'), async (req, r
   }
 });
 
+// PUT /api/questions/:id/content — edit question text/options.
+// Only allowed while the question is still DRAFT or CHANGES_REQUESTED and
+// (unless you're Super Admin) only by the person who created it — once a
+// question is out for SME review or beyond, its content is locked so a
+// reviewer isn't looking at a moving target; use "Request changes" /
+// resubmit for anything past that point instead.
+router.put('/:id/content', requirePermission('question.update'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { translations, options } = req.body;
+
+    const existing = await prisma.question.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ error: 'NOT_FOUND' });
+
+    const isSuperAdmin = req.user.roles?.includes('Super Admin');
+    if (!isSuperAdmin && existing.createdById !== req.user.id) {
+      return res.status(403).json({ error: 'FORBIDDEN', message: 'You can only edit questions you created.' });
+    }
+    if (!['DRAFT', 'CHANGES_REQUESTED'].includes(existing.status)) {
+      return res.status(409).json({
+        error: 'NOT_EDITABLE',
+        message: `This question is already ${existing.status.replaceAll('_', ' ').toLowerCase()} and can no longer be edited directly.`,
+      });
+    }
+
+    const question = await prisma.$transaction(async (tx) => {
+      await tx.questionTranslation.deleteMany({ where: { questionId: id } });
+      const oldOptions = await tx.questionOption.findMany({ where: { questionId: id }, select: { id: true } });
+      await tx.questionOptionTranslation.deleteMany({ where: { optionId: { in: oldOptions.map((o) => o.id) } } });
+      await tx.questionOption.deleteMany({ where: { questionId: id } });
+
+      return tx.question.update({
+        where: { id },
+        data: {
+          status: existing.status === 'CHANGES_REQUESTED' ? 'DRAFT' : existing.status,
+          translations: { create: translations || [] },
+          options: {
+            create: (options || []).map((o) => ({
+              isCorrect: !!o.isCorrect,
+              sortOrder: o.sortOrder || 0,
+              translations: { create: o.translations || [] },
+            })),
+          },
+        },
+        include: { translations: true, options: { include: { translations: true } } },
+      });
+    });
+
+    await req.audit('QUESTION_CONTENT_UPDATE', 'Question', id);
+    res.json(question);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // DELETE /api/questions/:id
 router.delete('/:id', requirePermission('question.delete'), async (req, res, next) => {
   try {
     const { id } = req.params;
+    const existing = await prisma.question.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ error: 'NOT_FOUND' });
+
+    const isSuperAdmin = req.user.roles?.includes('Super Admin');
+    if (!isSuperAdmin) {
+      if (existing.createdById !== req.user.id) {
+        return res.status(403).json({ error: 'FORBIDDEN', message: 'You can only delete questions you created.' });
+      }
+      if (existing.status !== 'DRAFT') {
+        return res.status(409).json({
+          error: 'NOT_DELETABLE',
+          message: 'Only draft questions can be deleted. This one is already in the review workflow — ask your Super Admin if it needs to be removed.',
+        });
+      }
+    }
+
     await prisma.question.delete({ where: { id } });
     await req.audit('QUESTION_DELETE', 'Question', id);
     res.status(204).send();

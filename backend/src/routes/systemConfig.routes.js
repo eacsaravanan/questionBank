@@ -67,4 +67,56 @@ router.get('/exam-master-config', requirePermission('exam.configure'), async (re
   } catch (err) { next(err); }
 });
 
+// ---- OCR engine configuration ----
+
+// PUT /api/system-config/ocr
+// { provider: 'tesseract'|'google-vision'|'custom', apiKey?, secretKey?, endpointUrl? }
+router.put('/ocr', requirePermission('ocr.configure'), async (req, res, next) => {
+  try {
+    const { provider, apiKey, secretKey, endpointUrl } = req.body;
+    if (!['tesseract', 'google-vision', 'custom'].includes(provider)) {
+      return res.status(400).json({ error: 'INVALID_PROVIDER', message: 'Unknown OCR provider.' });
+    }
+    if (provider === 'google-vision' && !apiKey) {
+      const existing = await prisma.systemConfig.findUnique({ where: { key: 'ocr' } });
+      if (!existing?.value?.encryptedApiKey) {
+        return res.status(400).json({ error: 'API_KEY_REQUIRED', message: 'An API key is required for Google Cloud Vision.' });
+      }
+    }
+    if (provider === 'custom' && !endpointUrl) {
+      return res.status(400).json({ error: 'ENDPOINT_REQUIRED', message: 'A custom provider needs an endpoint URL.' });
+    }
+
+    const existing = await prisma.systemConfig.findUnique({ where: { key: 'ocr' } });
+    const value = {
+      provider,
+      endpointUrl: endpointUrl || null,
+      encryptedApiKey: apiKey ? encryptField(apiKey) : existing?.value?.encryptedApiKey,
+      encryptedSecretKey: secretKey ? encryptField(secretKey) : existing?.value?.encryptedSecretKey,
+    };
+
+    await prisma.systemConfig.upsert({
+      where: { key: 'ocr' },
+      update: { value, isSecret: true },
+      create: { key: 'ocr', value, isSecret: true },
+    });
+    await req.audit('SYSTEM_CONFIG_UPDATE', 'SystemConfig', 'ocr', { provider });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// GET /api/system-config/ocr — returns config WITHOUT secrets
+router.get('/ocr', requirePermission('ocr.configure'), async (req, res, next) => {
+  try {
+    const cfg = await prisma.systemConfig.findUnique({ where: { key: 'ocr' } });
+    if (!cfg) return res.json({ provider: 'tesseract', endpointUrl: null, apiKeySet: false, secretKeySet: false });
+    res.json({
+      provider: cfg.value.provider,
+      endpointUrl: cfg.value.endpointUrl,
+      apiKeySet: !!cfg.value.encryptedApiKey,
+      secretKeySet: !!cfg.value.encryptedSecretKey,
+    });
+  } catch (err) { next(err); }
+});
+
 export default router;

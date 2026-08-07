@@ -10,12 +10,14 @@ import ContentManagement from './pages/superadmin/ContentManagement.jsx';
 import PaperAssembly from './pages/superadmin/PaperAssembly.jsx';
 import ExamScheduling from './pages/superadmin/ExamScheduling.jsx';
 import BrandingSettings from './pages/superadmin/BrandingSettings.jsx';
+import OcrSettings from './pages/superadmin/OcrSettings.jsx';
 import AuditLogViewer from './pages/superadmin/AuditLogViewer.jsx';
 import SmtpSettings from './pages/superadmin/SmtpSettings.jsx';
 import SystemSettings from './pages/superadmin/SystemSettings.jsx';
 
 import QuestionBuilder from './pages/admin/QuestionBuilder.jsx';
 import AdminPapers from './pages/admin/AdminPapers.jsx';
+import MyQuestions from './pages/admin/MyQuestions.jsx';
 import ReviewQueue from './pages/sme/ReviewQueue.jsx';
 import ExamGate from './pages/student/ExamGate.jsx';
 import ExamRoom from './pages/student/ExamRoom.jsx';
@@ -35,12 +37,14 @@ export default function App() {
       <Route path="/super-admin/papers" element={guarded(['Super Admin'], <PaperAssembly />)} />
       <Route path="/super-admin/schedule" element={guarded(['Super Admin'], <ExamScheduling />)} />
       <Route path="/super-admin/branding" element={guarded(['Super Admin'], <BrandingSettings />)} />
+      <Route path="/super-admin/ocr" element={guarded(['Super Admin'], <OcrSettings />)} />
       <Route path="/super-admin/audit" element={guarded(['Super Admin'], <AuditLogViewer />)} />
       <Route path="/super-admin/smtp" element={guarded(['Super Admin'], <SmtpSettings />)} />
       <Route path="/super-admin/settings" element={guarded(['Super Admin'], <SystemSettings />)} />
 
       <Route path="/admin" element={guarded(['Admin', 'Super Admin'], <QuestionBuilder />)} />
       <Route path="/admin/questions" element={guarded(['Admin', 'Super Admin'], <QuestionBuilder />)} />
+      <Route path="/admin/my-questions" element={guarded(['Admin', 'Super Admin'], <MyQuestions />)} />
       <Route path="/admin/papers" element={guarded(['Admin', 'Super Admin'], <AdminPapers />)} />
       <Route path="/sme/*" element={guarded(['SME', 'Paper Approver', 'Super Admin'], <ReviewQueue />)} />
 
