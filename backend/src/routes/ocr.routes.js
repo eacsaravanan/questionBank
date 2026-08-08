@@ -8,6 +8,8 @@ import { segmentOcrText } from '../utils/ocrSegment.js';
 import { logger } from '../utils/logger.js';
 import { runOcr, getOcrConfig } from '../utils/ocrProviders.js';
 import { extractDocxText, extractPdfText } from '../utils/documentExtract.js';
+import { detectDuplicates } from '../utils/duplicateDetection.js';
+import { prisma } from '../config/db.js';
 
 const router = Router();
 router.use(authenticate);
@@ -119,7 +121,49 @@ router.post('/ocr-extract', requirePermission('question.create'), uploadOcrSourc
     const questions = segmentOcrText(rawText).map((q) => ({
       ...q,
       ocrConfidence: confidence,
+      // sourceTag (e.g. "CCS4T/19"), if the segmenter found one, becomes
+      // the starting point for this question's "Previously asked in" —
+      // surfaced as method: OCR_SOURCE_TAG so the reviewer can see it was
+      // read off the page rather than typed or auto-matched.
+      previousAppearances: q.sourceTag
+        ? [{ label: q.sourceTag, method: 'OCR_SOURCE_TAG', confidence: null }]
+        : [],
     }));
+
+    // Duplicate-reuse detection against the existing bank, gated by the
+    // Super Admin's System Configuration toggle. Runs per extracted
+    // question and MERGES into previousAppearances rather than
+    // overwriting the OCR_SOURCE_TAG entry above — a question can
+    // legitimately have both (the paper printed one prior exam code, and
+    // the bank separately already has it filed under a different one).
+    // Every suggestion here is unconfirmed (no confirmedById) until a
+    // human accepts it in the Question Builder review queue.
+    try {
+      const dupConfig = await prisma.systemConfig.findUnique({ where: { key: 'duplicateDetection' } });
+      const mode = dupConfig?.value?.mode || 'both';
+      if (mode === 'automatic' || mode === 'both') {
+        const threshold = dupConfig?.value?.threshold;
+        for (const q of questions) {
+          const matches = await detectDuplicates(prisma, {
+            englishBody: q.questionText,
+            ...(threshold !== undefined ? { threshold } : {}),
+          });
+          for (const m of matches) {
+            q.previousAppearances.push({
+              label: m.papers[0] || `Question ${m.humanCode}`,
+              method: 'AUTO_DUPLICATE',
+              confidence: m.similarity,
+              matchedQuestionId: m.questionId,
+            });
+          }
+        }
+      }
+    } catch (dupErr) {
+      // Duplicate suggestions are a convenience, not a correctness
+      // requirement — never let a failure here block the OCR import
+      // itself.
+      logger.warn({ err: dupErr }, 'Duplicate detection pass failed during OCR extract');
+    }
 
     await req.audit('QUESTION_OCR_EXTRACT', 'OcrJob', sourceRef, {
       questionCount: questions.length,

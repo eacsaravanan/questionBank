@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { Lock } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 
@@ -90,6 +90,12 @@ export default function Login() {
           >
             {submitting ? 'Verifying…' : needsOtp ? 'Verify & sign in' : 'Sign in'}
           </button>
+
+          <div className="text-center mt-4">
+            <Link to="/forgot-password" className="text-xs text-white/50 hover:text-gold-400">
+              Forgot password?
+            </Link>
+          </div>
         </form>
 
         <p className="text-center text-xs text-white/30 mt-6 font-mono">

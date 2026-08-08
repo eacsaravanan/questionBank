@@ -180,4 +180,41 @@ router.post('/roles', requirePermission('role.create'), async (req, res, next) =
   } catch (err) { next(err); }
 });
 
+// POST /api/users/:id/reset-password
+// Admin-assisted reset: generates a fresh temporary password (same pattern
+// as account creation), forces mustResetPassword on the target account,
+// revokes their existing sessions, and emails/notifies them. Distinct from
+// the self-service /api/auth/forgot-password + /reset-password flow —
+// this one is for "this person can't get in and needs a human to help",
+// gated by the same user.update permission as other account edits (Super
+// Admin has it globally; Admin has it scoped to their own org via RBAC).
+router.post('/:id/reset-password', requirePermission('user.update'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const target = await prisma.user.findUnique({ where: { id } });
+    if (!target) return res.status(404).json({ error: 'NOT_FOUND' });
+
+    const tempPassword = crypto.randomBytes(9).toString('base64url');
+    const passwordHash = await argon2.hash(tempPassword, { type: argon2.argon2id });
+
+    await prisma.$transaction([
+      prisma.user.update({ where: { id }, data: { passwordHash, mustResetPassword: true, failedLoginCount: 0 } }),
+      prisma.session.updateMany({ where: { userId: id }, data: { revokedAt: new Date() } }),
+    ]);
+
+    await notifyUser(
+      target,
+      'PASSWORD_RESET_BY_ADMIN',
+      'Your password has been reset',
+      `An administrator reset your password.\n\nTemporary password: ${tempPassword}\nYou will be required to change this on next login.`
+    );
+
+    await req.audit('USER_PASSWORD_RESET_BY_ADMIN', 'User', id, { resetBy: req.user.id });
+    // Temp password is returned once, same as account creation, in case
+    // email delivery isn't configured yet (SMTP not set up) — the admin
+    // can hand it over directly if needed.
+    res.json({ ok: true, tempPassword });
+  } catch (err) { next(err); }
+});
+
 export default router;

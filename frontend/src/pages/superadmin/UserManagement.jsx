@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Users, UserPlus, Pencil, Ban, RotateCcw, X, Check, Trash2 } from 'lucide-react';
+import { Users, UserPlus, Pencil, Ban, RotateCcw, X, Check, Trash2, KeyRound } from 'lucide-react';
 import AppShell from '../../components/AppShell.jsx';
 import { PageHeader, Card, Button, Badge } from '../../components/ui.jsx';
 import { SUPER_ADMIN_NAV } from './nav.js';
@@ -179,6 +179,30 @@ export default function UserManagement() {
     }
   }
 
+  async function resetPassword(user) {
+    const ok = await confirm({
+      title: `Reset password for ${user.fullName}?`,
+      message: 'They will be signed out of all devices and required to set a new password on next login. A temporary password will be emailed to them (or shown here if email isn\'t configured).',
+      confirmLabel: 'Reset password',
+      tone: 'danger',
+    });
+    if (!ok) return;
+
+    setBusyId(user.id);
+    try {
+      const { data } = await api.post(`/users/${user.id}/reset-password`);
+      toast.success(
+        data.tempPassword
+          ? `Password reset. Temporary password: ${data.tempPassword}`
+          : `Password reset. A temporary password has been emailed to ${user.fullName}.`
+      );
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not reset this account\'s password.'));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   return (
     <AppShell title="Super Admin" navItems={SUPER_ADMIN_NAV}>
       <PageHeader eyebrow="User Management" title="Employees & roles" />
@@ -262,6 +286,14 @@ export default function UserManagement() {
                         </button>
                         {u.username !== 'superadmin' && (
                           <>
+                            <button
+                              onClick={() => resetPassword(u)}
+                              disabled={busyId === u.id}
+                              className="text-ink-900/40 hover:text-verdant-600"
+                              title="Reset password"
+                            >
+                              <KeyRound size={15} />
+                            </button>
                             <button
                               onClick={() => toggleActive(u)}
                               disabled={busyId === u.id}

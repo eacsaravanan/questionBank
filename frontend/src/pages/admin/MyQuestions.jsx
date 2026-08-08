@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { ListChecks, Send, Pencil, Trash2, X, Check } from 'lucide-react';
+import { ListChecks, Send, Pencil, Trash2, X, Check, History } from 'lucide-react';
 import AppShell from '../../components/AppShell.jsx';
 import { PageHeader, Card, Button, Badge } from '../../components/ui.jsx';
 import FormattableInput from '../../components/FormattableInput.jsx';
+import PreviouslyAskedIn from '../../components/PreviouslyAskedIn.jsx';
 import { ADMIN_NAV as NAV } from './nav.js';
 import api from '../../api/client.js';
 import { useToast, apiErrorMessage } from '../../components/Toast.jsx';
@@ -28,6 +29,18 @@ function EditForm({ question, onCancel, onSaved }) {
       textTamil: o.translations.find((t) => t.languageCode === 'ta')?.body || '',
     }))
   );
+  // Everything the backend returns here is already confirmed (an
+  // unconfirmed AUTO_DUPLICATE suggestion is never persisted — see
+  // PreviouslyAskedIn.jsx), so every loaded row starts confirmed: true.
+  const [previousAppearances, setPreviousAppearances] = useState(
+    (question.appearances || []).map((a) => ({
+      label: a.label,
+      method: a.method,
+      confidence: a.confidence,
+      matchedQuestionId: a.matchedQuestionId,
+      confirmed: true,
+    }))
+  );
   const [saving, setSaving] = useState(false);
 
   async function save() {
@@ -50,6 +63,9 @@ function EditForm({ question, onCancel, onSaved }) {
             ...(o.textTamil.trim() ? [{ languageCode: 'ta', body: o.textTamil }] : []),
           ],
         })),
+        previousAppearances: previousAppearances
+          .filter((a) => a.confirmed)
+          .map(({ label, method, confidence, matchedQuestionId }) => ({ label, method, confidence, matchedQuestionId })),
       });
       toast.success('Question updated.');
       onSaved();
@@ -64,6 +80,13 @@ function EditForm({ question, onCancel, onSaved }) {
     <div className="border-t border-ink-900/8 mt-3 pt-3">
       <FormattableInput label="Question text — English" value={englishBody} onChange={setEnglishBody} />
       <FormattableInput label="Question text — Tamil" value={tamilBody} onChange={setTamilBody} mode="tamil-live" />
+      <PreviouslyAskedIn
+        appearances={previousAppearances}
+        onChange={setPreviousAppearances}
+        englishBody={englishBody}
+        subjectId={question.subjectId}
+        excludeQuestionId={question.id}
+      />
       <label className="block text-xs font-medium text-ink-900/70 mb-1 mt-2">Options</label>
       <div className="space-y-2">
         {options.map((opt, idx) => (
@@ -199,6 +222,11 @@ export default function MyQuestions() {
             <p className="text-sm text-ink-900">
               {q.translations.find((t) => t.languageCode === 'en')?.body}
             </p>
+            {q.appearances?.length > 0 && (
+              <p className="flex items-center gap-1 text-xs text-ink-900/40 mt-1.5">
+                <History size={11} /> Previously asked in: {q.appearances.map((a) => a.label).join(', ')}
+              </p>
+            )}
             {q.status === 'CHANGES_REQUESTED' && (
               <p className="text-xs text-alert mt-2">
                 SME requested changes — edit and resubmit for review.

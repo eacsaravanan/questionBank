@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { X, Download, AlertTriangle } from 'lucide-react';
+import { X, Download, AlertTriangle, KeySquare } from 'lucide-react';
 import { Button } from './ui.jsx';
 import api from '../api/client.js';
 import { useToast, apiErrorMessage } from './Toast.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
 
 const POSITIONS = [
   ['top-left', 'top-center', 'top-right'],
@@ -10,8 +11,16 @@ const POSITIONS = [
   ['bottom-left', 'bottom-center', 'bottom-right'],
 ];
 
+const ANSWER_KEY_OPTIONS = [
+  { id: 'PAPER_DEFAULT', label: "Use this paper's approved policy" },
+  { id: 'NONE', label: 'No answer key' },
+  { id: 'EMBEDDED', label: 'Embedded in each question' },
+  { id: 'SEPARATE_SECTION', label: 'Separate section at the end' },
+];
+
 export default function ExportPdfModal({ paper, onClose }) {
   const toast = useToast();
+  const { hasPermission } = useAuth();
   const [profiles, setProfiles] = useState([]);
   const [brandingProfileId, setBrandingProfileId] = useState('');
   const [watermarkEnabled, setWatermarkEnabled] = useState(false);
@@ -19,7 +28,9 @@ export default function ExportPdfModal({ paper, onClose }) {
   const [pagesMode, setPagesMode] = useState('all'); // 'all' | 'custom'
   const [customPages, setCustomPages] = useState('');
   const [tamilFontAvailable, setTamilFontAvailable] = useState(true);
+  const [answerKeyChoice, setAnswerKeyChoice] = useState('PAPER_DEFAULT');
   const [generating, setGenerating] = useState(false);
+  const [generatingKeyOnly, setGeneratingKeyOnly] = useState(false);
 
   useEffect(() => {
     api.get('/branding-profiles').then((res) => {
@@ -50,6 +61,7 @@ export default function ExportPdfModal({ paper, onClose }) {
         {
           brandingProfileId: brandingProfileId || undefined,
           watermark: watermarkEnabled ? { enabled: true, position, pages: pagesMode, customPages: customPageNumbers } : { enabled: false },
+          answerKeyOverride: answerKeyChoice === 'PAPER_DEFAULT' ? undefined : answerKeyChoice,
         },
         { responseType: 'blob' }
       );
@@ -65,6 +77,30 @@ export default function ExportPdfModal({ paper, onClose }) {
       toast.error(apiErrorMessage(err, 'Could not generate the PDF.'));
     } finally {
       setGenerating(false);
+    }
+  }
+
+  // Standalone answer-key-only PDF — independent of whatever answer-key
+  // choice is set above for the main paper export; works even when the
+  // paper itself is published with NONE (no key anywhere in the public
+  // copy). Gated by the same paper.approve permission the backend
+  // enforces, so this button is simply hidden for roles that can't use it
+  // rather than showing and then failing.
+  async function generateAnswerKeyOnly() {
+    setGeneratingKeyOnly(true);
+    try {
+      const res = await api.post(`/question-papers/${paper.id}/export-answer-key`, {}, { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${paper.title.replace(/[^a-z0-9]/gi, '_')}_ANSWER_KEY.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success('Answer key PDF generated.');
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not generate the answer key PDF.'));
+    } finally {
+      setGeneratingKeyOnly(false);
     }
   }
 
@@ -94,6 +130,22 @@ export default function ExportPdfModal({ paper, onClose }) {
           <option value="">Tenant default</option>
           {profiles.map((p) => <option key={p.id} value={p.id}>{p.label}{p.confidentialMode ? ' (confidential)' : ''}</option>)}
         </select>
+
+        <label className="block text-xs font-medium text-ink-900/70 mb-1 flex items-center gap-1.5">
+          <KeySquare size={12} /> Answer key for this download
+        </label>
+        <select
+          className="w-full mb-1 px-3 py-2 rounded-lg border border-ink-900/15 text-sm"
+          value={answerKeyChoice}
+          onChange={(e) => setAnswerKeyChoice(e.target.value)}
+        >
+          {ANSWER_KEY_OPTIONS.map((o) => (
+            <option key={o.id} value={o.id}>{o.label}</option>
+          ))}
+        </select>
+        <p className="text-xs text-ink-900/40 mb-4">
+          This only affects this download — it doesn't change the paper's approved publish policy.
+        </p>
 
         <label className="flex items-center gap-2 text-sm text-ink-900/80 mb-3">
           <input type="checkbox" checked={watermarkEnabled} onChange={(e) => setWatermarkEnabled(e.target.checked)} />
@@ -139,11 +191,22 @@ export default function ExportPdfModal({ paper, onClose }) {
           </>
         )}
 
-        <div className="flex justify-end gap-3 mt-2">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" onClick={generate} disabled={generating}>
-            <span className="flex items-center gap-1.5"><Download size={14} /> {generating ? 'Generating…' : 'Generate & download'}</span>
-          </Button>
+        <div className="flex items-center justify-between gap-3 mt-2">
+          {hasPermission('paper.approve') && (
+            <button
+              onClick={generateAnswerKeyOnly}
+              disabled={generatingKeyOnly}
+              className="text-xs text-ink-900/50 hover:text-ink-900 underline decoration-dotted disabled:opacity-50"
+            >
+              {generatingKeyOnly ? 'Generating…' : 'Export Answer Key Only (PDF)'}
+            </button>
+          )}
+          <div className="flex justify-end gap-3 ml-auto">
+            <Button variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button variant="primary" onClick={generate} disabled={generating}>
+              <span className="flex items-center gap-1.5"><Download size={14} /> {generating ? 'Generating…' : 'Generate & download'}</span>
+            </Button>
+          </div>
         </div>
       </div>
     </div>

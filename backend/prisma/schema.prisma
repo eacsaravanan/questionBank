@@ -81,6 +81,30 @@ model User {
   attempts          ExamAttempt[]
   notifications     Notification[]
   sessions          Session[]
+  passwordResetTokens PasswordResetToken[]
+  confirmedAppearances QuestionAppearance[] @relation("AppearanceConfirmedBy")
+}
+
+// ---------------------------------------------------------------------------
+// Password reset — self-service "forgot password" flow. Separate from
+// User.mustResetPassword (which is the admin-assigned-temp-password path);
+// this table backs the emailed-link path. Tokens are stored hashed (never
+// plaintext) and are single-use + time-limited, same pattern as
+// ExamRegistration.verificationCodeHash / ExamSchedule.releaseKeyHash
+// elsewhere in this schema.
+// ---------------------------------------------------------------------------
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  requestIp String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model UserRole {
@@ -271,9 +295,50 @@ model Question {
   reviews      QuestionReview[]
   paperItems   QuestionPaperItem[]
   attemptAnswers AttemptAnswer[]
+  appearances  QuestionAppearance[]
 
   @@index([subjectId, status])
   @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// "Previously asked in" — provenance/reuse tracking. A question can carry
+// more than one prior appearance (compiled papers often reuse a question
+// across several later exams too). Populated three ways, all landing in
+// this same table:
+//   - MANUAL: preparer types it in free-text ("CCS4T/19", "TNPSC Grp IV 2019")
+//   - OCR_SOURCE_TAG: auto-detected trailing code printed on the source PDF
+//     right after the English question (e.g. "CCS4T/19"), extracted by
+//     ocrSegment.js
+//   - AUTO_DUPLICATE: the internal similarity detector found this question
+//     already exists (near-verbatim) elsewhere in the bank, and suggests
+//     linking to that other question's own known appearances/humanCode
+// AUTO_* rows always start unconfirmed (confirmedById null) — they're
+// suggestions surfaced for human review, never silently authoritative.
+// ---------------------------------------------------------------------------
+enum AppearanceMethod {
+  MANUAL
+  OCR_SOURCE_TAG
+  AUTO_DUPLICATE
+}
+
+model QuestionAppearance {
+  id            String           @id @default(uuid())
+  questionId    String
+  label         String           // free text shown to the reader, e.g. "CCS4T/19"
+  method        AppearanceMethod @default(MANUAL)
+  confidence    Float?           // 0-1, set for AUTO_* methods only
+  matchedQuestionId String?      // for AUTO_DUPLICATE, the existing question this was matched against
+  confirmedById String?          // null until a human accepts an AUTO_* suggestion; MANUAL rows are
+                                  // implicitly confirmed by whoever typed them (createdById below)
+  createdById   String
+  createdAt     DateTime         @default(now())
+  confirmedAt   DateTime?
+
+  question    Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  confirmedBy User?    @relation("AppearanceConfirmedBy", fields: [confirmedById], references: [id])
+
+  @@index([questionId])
 }
 
 // One row per language per question — Unicode-safe (Postgres text is UTF-8
@@ -374,6 +439,16 @@ model QuestionPaper {
   status          PaperStatus @default(DRAFT)
   viewMode        String      @default("ALL_AT_ONCE") // "ALL_AT_ONCE" | "ONE_BY_ONE" — set by Super Admin at publish time
   allowAnswerChange Boolean   @default(true)
+  // Answer-key publish policy — set by Super Admin, normally at final-approval
+  // time. "NONE": the student-facing paper never shows or implies the answer
+  // key anywhere, in any export. "EMBEDDED": correct option is bolded inline
+  // within each question, in every export. "SEPARATE_SECTION": no in-question
+  // marking, but a trailing "ANSWER KEY" section lists Q# -> option. This is
+  // the DEFAULT used by /export-pdf; a single export can still override it
+  // for that download only (see pdfExport.routes.js), and the standalone
+  // /export-answer-key endpoint always works regardless of this value.
+  answerKeyPolicy String      @default("NONE") // "NONE" | "EMBEDDED" | "SEPARATE_SECTION"
+  answerKeyPolicySetAt DateTime?
   createdById     String
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt

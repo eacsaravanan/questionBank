@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { FileCheck2, CalendarClock, Send, FileDown } from 'lucide-react';
+import { FileCheck2, CalendarClock, Send, FileDown, KeySquare } from 'lucide-react';
 import AppShell from '../../components/AppShell.jsx';
 import { PageHeader, Card, Button, Badge } from '../../components/ui.jsx';
 import { SUPER_ADMIN_NAV as NAV } from './nav.js';
@@ -7,6 +7,9 @@ import api from '../../api/client.js';
 import { useToast, apiErrorMessage } from '../../components/Toast.jsx';
 import { useConfirm } from '../../components/ConfirmDialog.jsx';
 import ExportPdfModal from '../../components/ExportPdfModal.jsx';
+import AnswerKeyPolicyModal from '../../components/AnswerKeyPolicyModal.jsx';
+
+const ANSWER_KEY_POLICY_LABEL = { NONE: 'No answer key', EMBEDDED: 'Key embedded', SEPARATE_SECTION: 'Key: separate section' };
 
 export default function PaperAssembly() {
   const toast = useToast();
@@ -20,6 +23,10 @@ export default function PaperAssembly() {
   const [releaseInfo, setReleaseInfo] = useState(null);
   const [busy, setBusy] = useState(false);
   const [exportingPaper, setExportingPaper] = useState(null);
+  // Two distinct purposes for this modal: finalizing approval (requires a
+  // choice, has a `stage`) vs. revising an already-approved paper's
+  // policy later (no `stage` — just PATCHes the policy directly).
+  const [answerKeyModalPaper, setAnswerKeyModalPaper] = useState(null);
 
   async function load() {
     try {
@@ -72,14 +79,33 @@ export default function PaperAssembly() {
     }
   }
 
-  async function approveAsSuperAdmin(paper, stage) {
+  async function approveAsSuperAdmin(paper, stage, answerKeyPolicy) {
     setBusy(true);
     try {
-      await api.post(`/question-papers/${paper.id}/approve`, { stage, action: 'APPROVED' });
+      await api.post(`/question-papers/${paper.id}/approve`, {
+        stage,
+        action: 'APPROVED',
+        ...(stage === 'SUPER_ADMIN' ? { answerKeyPolicy } : {}),
+      });
       toast.success(`"${paper.title}" approved.`);
+      setAnswerKeyModalPaper(null);
       await load();
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Could not approve this paper.'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateAnswerKeyPolicy(paper, policy) {
+    setBusy(true);
+    try {
+      await api.patch(`/question-papers/${paper.id}/answer-key-policy`, { policy });
+      toast.success(`Answer key policy updated for "${paper.title}".`);
+      setAnswerKeyModalPaper(null);
+      await load();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not update the answer key policy.'));
     } finally {
       setBusy(false);
     }
@@ -156,13 +182,27 @@ export default function PaperAssembly() {
               <li key={p.id} className="border border-ink-900/10 rounded-lg p-3">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-medium">{p.title}</span>
-                  <Badge tone={p.status === 'APPROVED' ? 'verdant' : 'gold'}>{p.status.replaceAll('_', ' ')}</Badge>
+                  <div className="flex items-center gap-1.5">
+                    {p.status === 'APPROVED' && (
+                      <Badge tone="ink">{ANSWER_KEY_POLICY_LABEL[p.answerKeyPolicy] || 'No answer key'}</Badge>
+                    )}
+                    <Badge tone={p.status === 'APPROVED' ? 'verdant' : 'gold'}>{p.status.replaceAll('_', ' ')}</Badge>
+                  </div>
                 </div>
                 <div className="flex gap-2 flex-wrap">
                   {p.status === 'DRAFT' && <Button variant="ghost" disabled={busy} onClick={() => submitForApproval(p)}><span className="flex items-center gap-1 text-xs"><Send size={12}/> Submit for approval</span></Button>}
                   {p.status === 'PENDING_SME_APPROVAL' && <Button variant="ghost" disabled={busy} onClick={() => approveAsSuperAdmin(p, 'SME')}>Approve (as SME stage)</Button>}
-                  {p.status === 'PENDING_SUPER_ADMIN_APPROVAL' && <Button variant="ghost" disabled={busy} onClick={() => approveAsSuperAdmin(p, 'SUPER_ADMIN')}>Final approve</Button>}
+                  {p.status === 'PENDING_SUPER_ADMIN_APPROVAL' && (
+                    <Button variant="ghost" disabled={busy} onClick={() => setAnswerKeyModalPaper({ paper: p, stage: 'SUPER_ADMIN' })}>
+                      Final approve
+                    </Button>
+                  )}
                   {p.status === 'APPROVED' && <Button variant="gold" disabled={busy} onClick={() => setActivePaper(p)}><span className="flex items-center gap-1 text-xs"><CalendarClock size={12}/> Schedule</span></Button>}
+                  {p.status === 'APPROVED' && (
+                    <Button variant="ghost" disabled={busy} onClick={() => setAnswerKeyModalPaper({ paper: p, stage: null })}>
+                      <span className="flex items-center gap-1 text-xs"><KeySquare size={12}/> Answer key policy</span>
+                    </Button>
+                  )}
                   <Button variant="ghost" onClick={() => setExportingPaper(p)}><span className="flex items-center gap-1 text-xs"><FileDown size={12}/> Export PDF</span></Button>
                 </div>
               </li>
@@ -196,6 +236,21 @@ export default function PaperAssembly() {
 
       {exportingPaper && (
         <ExportPdfModal paper={exportingPaper} onClose={() => setExportingPaper(null)} />
+      )}
+
+      {answerKeyModalPaper && (
+        <AnswerKeyPolicyModal
+          paperTitle={answerKeyModalPaper.paper.title}
+          initialPolicy={answerKeyModalPaper.paper.answerKeyPolicy}
+          confirmLabel={answerKeyModalPaper.stage ? 'Approve paper' : 'Update policy'}
+          busy={busy}
+          onCancel={() => setAnswerKeyModalPaper(null)}
+          onConfirm={(policy) =>
+            answerKeyModalPaper.stage
+              ? approveAsSuperAdmin(answerKeyModalPaper.paper, answerKeyModalPaper.stage, policy)
+              : updateAnswerKeyPolicy(answerKeyModalPaper.paper, policy)
+          }
+        />
       )}
     </AppShell>
   );

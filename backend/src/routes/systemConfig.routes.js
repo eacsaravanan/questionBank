@@ -119,4 +119,43 @@ router.get('/ocr', requirePermission('ocr.configure'), async (req, res, next) =>
   } catch (err) { next(err); }
 });
 
+// ---- Duplicate / reuse detection configuration ----
+
+// PUT /api/system-config/duplicate-detection  { mode: 'off'|'manual'|'automatic'|'both', threshold: 0-1 }
+// Controls how "Previously asked in" auto-suggestions are generated
+// (question.routes.js POST /detect-duplicates and ocr.routes.js's
+// per-question pass during bulk OCR import). "manual" leaves the free-text
+// field available but runs no similarity search; "automatic"/"both" run
+// it — the two only differ in whether OCR import runs the check
+// proactively vs. the Question Builder UI calling it on demand.
+router.put('/duplicate-detection', requirePermission('system.configure'), async (req, res, next) => {
+  try {
+    const { mode = 'both', threshold = 0.72 } = req.body;
+    if (!['off', 'manual', 'automatic', 'both'].includes(mode)) {
+      return res.status(400).json({ error: 'INVALID_MODE' });
+    }
+    const numericThreshold = Number(threshold);
+    if (Number.isNaN(numericThreshold) || numericThreshold < 0 || numericThreshold > 1) {
+      return res.status(400).json({ error: 'INVALID_THRESHOLD', message: 'threshold must be between 0 and 1.' });
+    }
+
+    const value = { mode, threshold: numericThreshold };
+    await prisma.systemConfig.upsert({
+      where: { key: 'duplicateDetection' },
+      update: { value },
+      create: { key: 'duplicateDetection', value },
+    });
+    await req.audit('SYSTEM_CONFIG_UPDATE', 'SystemConfig', 'duplicateDetection', value);
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// GET /api/system-config/duplicate-detection
+router.get('/duplicate-detection', requirePermission('system.configure'), async (req, res, next) => {
+  try {
+    const cfg = await prisma.systemConfig.findUnique({ where: { key: 'duplicateDetection' } });
+    res.json(cfg?.value || { mode: 'both', threshold: 0.72 });
+  } catch (err) { next(err); }
+});
+
 export default router;

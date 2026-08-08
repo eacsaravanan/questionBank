@@ -38,6 +38,19 @@ export const authLimiter = rateLimit({
   message: { error: 'TOO_MANY_ATTEMPTS', message: 'Too many login attempts, try again later' },
 });
 
+// Limiter for forgot-password requests — deliberately tighter than
+// authLimiter and keyed by IP (express-rate-limit default). Combined with
+// the "always return 200" response in auth.routes.js, this keeps the
+// endpoint from being usable either to enumerate valid emails or to spam
+// a victim's inbox with reset links.
+export const passwordResetLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'TOO_MANY_ATTEMPTS', message: 'Too many password reset requests, try again later' },
+});
+
 // Very tight limiter for exam attempt submission endpoints — protects
 // against scripted mass-submission / automated answer harvesting during
 // a live exam window.

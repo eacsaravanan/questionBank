@@ -12,6 +12,7 @@ router.use(authenticate);
 const MARGIN = 50;
 const TAMIL_FONT_PATH = path.join(process.cwd(), 'assets', 'fonts', 'NotoSansTamil-Regular.ttf');
 const tamilFontAvailable = fs.existsSync(TAMIL_FONT_PATH);
+const VALID_ANSWER_KEY_POLICIES = ['NONE', 'EMBEDDED', 'SEPARATE_SECTION'];
 
 // GET /api/question-papers/pdf-font-status — lets the frontend warn up
 // front if Tamil text will be omitted from exports, rather than the
@@ -45,7 +46,7 @@ function watermarkOrigin(position, pageWidth, pageHeight, imgWidth, imgHeight) {
 router.post('/:id/export-pdf', requirePermission('paper.read'), async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { brandingProfileId, watermark } = req.body;
+    const { brandingProfileId, watermark, answerKeyOverride } = req.body;
 
     const paper = await prisma.questionPaper.findUnique({
       where: { id },
@@ -55,13 +56,26 @@ router.post('/:id/export-pdf', requirePermission('paper.read'), async (req, res,
           orderBy: { sortOrder: 'asc' },
           include: {
             question: {
-              include: { translations: true, options: { include: { translations: true } }, subject: true },
+              include: {
+                translations: true,
+                options: { include: { translations: true }, orderBy: { sortOrder: 'asc' } },
+                subject: true,
+                appearances: true,
+              },
             },
           },
         },
       },
     });
     if (!paper) return res.status(404).json({ error: 'NOT_FOUND' });
+
+    // The paper's approved policy is the default for every export; a
+    // single download can override it (e.g. Super Admin wants one
+    // no-key copy for public posting and one separate-section copy for
+    // internal distribution) WITHOUT changing what's stored on the paper.
+    const answerKeyPolicy = VALID_ANSWER_KEY_POLICIES.includes(answerKeyOverride)
+      ? answerKeyOverride
+      : paper.answerKeyPolicy || 'NONE';
 
     const branding = brandingProfileId
       ? await prisma.brandingProfile.findUnique({ where: { id: brandingProfileId } })
@@ -159,6 +173,7 @@ router.post('/:id/export-pdf', requirePermission('paper.read'), async (req, res,
     }
 
     let qNumber = 0;
+    const answerKeyEntries = []; // [{ qNumber, label }] — used when policy is SEPARATE_SECTION
     for (const group of groups) {
       doc.fontSize(12).font('Helvetica-Bold').fillColor('#000').text(group.name, { underline: true });
       doc.moveDown(0.5);
@@ -168,13 +183,34 @@ router.post('/:id/export-pdf', requirePermission('paper.read'), async (req, res,
         const q = item.question;
         const en = q.translations.find((t) => t.languageCode === 'en');
         const ta = q.translations.find((t) => t.languageCode === 'ta');
+        const correctOption = q.options.find((o) => o.isCorrect);
+        if (correctOption) {
+          const label = ['A', 'B', 'C', 'D', 'E', 'F'][q.options.indexOf(correctOption)] || '';
+          answerKeyEntries.push({ qNumber, label });
+        }
 
-        doc.fontSize(10).font('Helvetica-Bold').fillColor('#000').text(`${qNumber}. ${en?.body || ''}`);
+        // "Previously asked in" — printed in bold at the end of the
+        // English question line only (matches source-paper convention,
+        // e.g. "...is CCS4T/19"). Every appearance the question has is
+        // shown, comma-separated.
+        const priorLabels = q.appearances?.map((a) => a.label).filter(Boolean) || [];
+        const priorSuffix = priorLabels.length ? `  ${priorLabels.join(', ')}` : '';
+
+        doc.fontSize(10).font('Helvetica-Bold').fillColor('#000')
+          .text(`${qNumber}. `, { continued: true })
+          .font('Helvetica').text(en?.body || '', { continued: !!priorSuffix });
+        if (priorSuffix) doc.font('Helvetica-Bold').text(priorSuffix);
 
         for (const opt of q.options) {
           const optEn = opt.translations.find((t) => t.languageCode === 'en');
-          const label = ['A', 'B', 'C', 'D', 'E', 'F'][opt.sortOrder] || '';
-          if (optEn) doc.fontSize(9).font('Helvetica').text(`   (${label}) ${optEn.body}`);
+          const label = ['A', 'B', 'C', 'D', 'E', 'F'][q.options.indexOf(opt)] || '';
+          if (!optEn) continue;
+          // Correctness is a single property of the option shared across
+          // languages (see QuestionOption.isCorrect in the schema) — so
+          // the SAME option bolds in both the English and Tamil renders
+          // below, driven by one flag, never chosen per-language.
+          const bold = answerKeyPolicy === 'EMBEDDED' && opt.isCorrect;
+          doc.fontSize(9).font(bold ? 'Helvetica-Bold' : 'Helvetica').text(`   (${label}) ${optEn.body}`);
         }
 
         if (ta?.body) {
@@ -182,8 +218,10 @@ router.post('/:id/export-pdf', requirePermission('paper.read'), async (req, res,
             doc.font('Tamil').fontSize(10).text(ta.body);
             for (const opt of q.options) {
               const optTa = opt.translations.find((t) => t.languageCode === 'ta');
-              const label = ['A', 'B', 'C', 'D', 'E', 'F'][opt.sortOrder] || '';
-              if (optTa) doc.font('Tamil').fontSize(9).text(`   (${label}) ${optTa.body}`);
+              const label = ['A', 'B', 'C', 'D', 'E', 'F'][q.options.indexOf(opt)] || '';
+              if (!optTa) continue;
+              const bold = answerKeyPolicy === 'EMBEDDED' && opt.isCorrect;
+              doc.font('Tamil').fontSize(9).text(`   (${label}) ${optTa.body}`, { underline: bold }); // pdfkit's Tamil font may lack a bold variant — underline stands in as the bold-equivalent emphasis
             }
             doc.font('Helvetica'); // reset for the next question's English text
           } else {
@@ -200,7 +238,88 @@ router.post('/:id/export-pdf', requirePermission('paper.read'), async (req, res,
       doc.moveDown(0.5);
     }
 
-    await req.audit('PAPER_EXPORT_PDF', 'QuestionPaper', id, { watermarkEnabled: wm.enabled, tamilContentSkipped });
+    if (answerKeyPolicy === 'SEPARATE_SECTION' && answerKeyEntries.length) {
+      doc.addPage();
+      doc.fontSize(14).font('Helvetica-Bold').fillColor('#000').text('ANSWER KEY', { align: 'center' });
+      doc.moveDown(1);
+
+      // Grid layout, ~5 entries per row, e.g. "Q1 - A   Q2 - C   Q3 - B ..."
+      const perRow = 5;
+      const colWidth = (doc.page.width - MARGIN * 2) / perRow;
+      doc.fontSize(10).font('Helvetica');
+      for (let i = 0; i < answerKeyEntries.length; i += perRow) {
+        const row = answerKeyEntries.slice(i, i + perRow);
+        const y = doc.y;
+        row.forEach((entry, col) => {
+          doc.text(`Q${entry.qNumber} - ${entry.label}`, MARGIN + col * colWidth, y, { width: colWidth });
+        });
+        doc.y = y + 18;
+        if (doc.y > doc.page.height - MARGIN - 30 && i + perRow < answerKeyEntries.length) doc.addPage();
+      }
+    }
+
+    await req.audit('PAPER_EXPORT_PDF', 'QuestionPaper', id, { watermarkEnabled: wm.enabled, tamilContentSkipped, answerKeyPolicy });
+    doc.end();
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/question-papers/:id/export-answer-key
+// Standalone answer-key-only export — Q# / correct option, nothing else.
+// Independent of the paper's own answerKeyPolicy (works even for a paper
+// published with policy NONE, i.e. the public copy has no key anywhere)
+// so invigilators/evaluators always have a way to get the key without it
+// ever touching the student-facing document. Gated to paper.approve since
+// that's already Super-Admin-and-above in this app's role setup.
+router.post('/:id/export-answer-key', requirePermission('paper.approve'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const paper = await prisma.questionPaper.findUnique({
+      where: { id },
+      include: {
+        exam: true,
+        items: {
+          orderBy: { sortOrder: 'asc' },
+          include: { question: { include: { options: true } } },
+        },
+      },
+    });
+    if (!paper) return res.status(404).json({ error: 'NOT_FOUND' });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${paper.title.replace(/[^a-z0-9]/gi, '_')}_ANSWER_KEY.pdf"`);
+
+    const doc = new PDFDocument({ size: 'A4', margin: MARGIN, bufferPages: true });
+    doc.pipe(res);
+
+    doc.fontSize(9).font('Helvetica-Bold').fillColor('#a00').text('CONFIDENTIAL — INTERNAL USE ONLY', { align: 'center' });
+    doc.moveDown(0.3);
+    doc.fontSize(14).font('Helvetica-Bold').fillColor('#000').text(`${paper.title} — Answer Key`, { align: 'center' });
+    doc.moveDown(1);
+
+    const entries = paper.items.map((item, idx) => {
+      const correctIdx = item.question.options
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .findIndex((o) => o.isCorrect);
+      const label = ['A', 'B', 'C', 'D', 'E', 'F'][correctIdx] || '?';
+      return { qNumber: idx + 1, label };
+    });
+
+    const perRow = 5;
+    const colWidth = (doc.page.width - MARGIN * 2) / perRow;
+    doc.fontSize(10).font('Helvetica').fillColor('#000');
+    for (let i = 0; i < entries.length; i += perRow) {
+      const row = entries.slice(i, i + perRow);
+      const y = doc.y;
+      row.forEach((entry, col) => {
+        doc.text(`Q${entry.qNumber} - ${entry.label}`, MARGIN + col * colWidth, y, { width: colWidth });
+      });
+      doc.y = y + 18;
+      if (doc.y > doc.page.height - MARGIN - 30 && i + perRow < entries.length) doc.addPage();
+    }
+
+    await req.audit('PAPER_EXPORT_ANSWER_KEY', 'QuestionPaper', id);
     doc.end();
   } catch (err) {
     next(err);

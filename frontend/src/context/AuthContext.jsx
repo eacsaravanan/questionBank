@@ -49,8 +49,20 @@ export function AuthProvider({ children }) {
     return !!user?.roles?.includes(name);
   }
 
+  // Used after a successful change-password so the just-cleared
+  // mustResetPassword flag takes effect immediately, without requiring a
+  // full re-login — RoleGuard reads this same `user` object to decide
+  // whether to force someone back to /profile.
+  function patchUser(partial) {
+    setUser((prev) => {
+      const next = { ...prev, ...partial };
+      localStorage.setItem('user', JSON.stringify(next));
+      return next;
+    });
+  }
+
   return (
-    <AuthContext.Provider value={{ user, loading, error, login, logout, hasPermission, hasRole }}>
+    <AuthContext.Provider value={{ user, loading, error, login, logout, hasPermission, hasRole, patchUser }}>
       {children}
     </AuthContext.Provider>
   );

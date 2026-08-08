@@ -3,6 +3,7 @@ import { ScanText, Keyboard, Trash2, CheckCircle2 } from 'lucide-react';
 import AppShell from '../../components/AppShell.jsx';
 import { PageHeader, Card, Button, Badge } from '../../components/ui.jsx';
 import FormattableInput from '../../components/FormattableInput.jsx';
+import PreviouslyAskedIn from '../../components/PreviouslyAskedIn.jsx';
 import api from '../../api/client.js';
 import { useToast, apiErrorMessage } from '../../components/Toast.jsx';
 import { useConfirm } from '../../components/ConfirmDialog.jsx';
@@ -56,6 +57,14 @@ function QueueItem({ item, subjects, onChange, onRemove, onSave, onSubmitReview 
         value={item.tamilBody}
         onChange={(v) => onChange({ ...item, tamilBody: v })}
         mode="tamil-live"
+      />
+
+      <PreviouslyAskedIn
+        appearances={item.previousAppearances || []}
+        onChange={(next) => onChange({ ...item, previousAppearances: next })}
+        englishBody={item.englishBody}
+        subjectId={item.subjectId}
+        excludeQuestionId={item.questionId}
       />
 
       <label className="block text-xs font-medium text-ink-900/70 mb-1 mt-2">Options</label>
@@ -126,6 +135,7 @@ function makeManualItem() {
     subjectId: '',
     englishBody: '',
     tamilBody: '',
+    previousAppearances: [],
     options: [
       { label: 'A', text: '', textTamil: '', isCorrect: true },
       { label: 'B', text: '', textTamil: '' },
@@ -209,6 +219,15 @@ export default function QuestionBuilder() {
         sourceRef: data.sourceRef,
         englishBody: q.questionText,
         tamilBody: q.questionTextTamil || '',
+        // OCR_SOURCE_TAG (the code printed on the source PDF, e.g.
+        // "CCS4T/19") is pre-confirmed automatically — it was read
+        // straight off the page. AUTO_DUPLICATE (a similarity guess
+        // against the existing bank) stays pending for the preparer to
+        // confirm or dismiss.
+        previousAppearances: (q.previousAppearances || []).map((a) => ({
+          ...a,
+          confirmed: a.method !== 'AUTO_DUPLICATE',
+        })),
         options: q.options.length
           ? q.options.map((o, i) => ({ label: o.label, text: o.text, textTamil: o.textTamil || '', isCorrect: i === 0 }))
           : [
@@ -273,6 +292,11 @@ export default function QuestionBuilder() {
       preparationMode: item.mode,
       ocrConfidence: item.ocrConfidence,
       ocrSourceRef: item.sourceRef,
+      // Only CONFIRMED entries are sent — a pending duplicate-match
+      // suggestion the preparer hasn't accepted yet stays purely local.
+      previousAppearances: (item.previousAppearances || [])
+        .filter((a) => a.confirmed)
+        .map(({ label, method, confidence, matchedQuestionId }) => ({ label, method, confidence, matchedQuestionId })),
     };
 
     try {

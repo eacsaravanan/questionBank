@@ -1,10 +1,91 @@
 import React, { useEffect, useState } from 'react';
-import { ScanText, ExternalLink } from 'lucide-react';
+import { ScanText, ExternalLink, Copy } from 'lucide-react';
 import AppShell from '../../components/AppShell.jsx';
 import { PageHeader, Card, Button, Badge } from '../../components/ui.jsx';
 import { SUPER_ADMIN_NAV as NAV } from './nav.js';
 import api from '../../api/client.js';
 import { useToast, apiErrorMessage } from '../../components/Toast.jsx';
+
+const DUPLICATE_MODES = [
+  { id: 'off', name: 'Off', blurb: 'No duplicate checking anywhere. "Previously asked in" stays available as a manual free-text field only.' },
+  { id: 'manual', name: 'Manual only', blurb: 'The "Check for repeats" button and OCR bulk-import suggestions are disabled. Preparers type "Previously asked in" by hand.' },
+  { id: 'automatic', name: 'Automatic on import', blurb: 'Every question extracted via bulk OCR import is automatically checked against the existing bank as it\'s extracted. The manual "Check for repeats" button in Question Builder is not used.' },
+  { id: 'both', name: 'Both (recommended)', blurb: 'Automatic checking runs during OCR bulk import, and preparers can also trigger it on demand from Question Builder / My Questions with "Check for repeats".' },
+];
+
+function DuplicateDetectionSettings() {
+  const toast = useToast();
+  const [mode, setMode] = useState('both');
+  const [threshold, setThreshold] = useState(0.72);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get('/system-config/duplicate-detection').then((res) => {
+      setMode(res.data.mode || 'both');
+      setThreshold(res.data.threshold ?? 0.72);
+    }).catch((err) => toast.error(apiErrorMessage(err, 'Could not load duplicate detection settings.')));
+  }, []); // eslint-disable-line
+
+  async function save(e) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await api.put('/system-config/duplicate-detection', { mode, threshold });
+      toast.success('Duplicate detection settings saved.');
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not save duplicate detection settings.'));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card className="p-6 mt-6">
+      <div className="flex items-center gap-2 mb-1">
+        <Copy size={16} className="text-verdant-600" />
+        <h2 className="font-display font-semibold text-ink-900 text-sm">Duplicate / reuse detection</h2>
+      </div>
+      <p className="text-xs text-ink-900/50 mb-4">
+        Controls how "Previously asked in" gets auto-suggested when a question looks like it already
+        exists elsewhere in the bank — separate from the source-tag (e.g. "CCS4T/19") that's read
+        straight off a source PDF, which is always auto-filled regardless of this setting.
+      </p>
+
+      <form onSubmit={save} className="space-y-3">
+        {DUPLICATE_MODES.map((m) => (
+          <label key={m.id} className={`block p-3 rounded-lg border cursor-pointer ${mode === m.id ? 'border-gold-500 bg-gold-500/5' : 'border-ink-900/10'}`}>
+            <div className="flex items-center gap-2 mb-1">
+              <input type="radio" checked={mode === m.id} onChange={() => setMode(m.id)} />
+              <span className="text-sm font-medium text-ink-900">{m.name}</span>
+              {m.id === 'both' && <Badge tone="verdant">Recommended</Badge>}
+            </div>
+            <p className="text-xs text-ink-900/50 ml-6">{m.blurb}</p>
+          </label>
+        ))}
+
+        {mode !== 'off' && mode !== 'manual' && (
+          <div className="pl-2 pt-2">
+            <label className="block text-xs font-medium text-ink-900/70 mb-1">
+              Match sensitivity — {Math.round(threshold * 100)}% similarity required
+            </label>
+            <input
+              type="range" min="0.5" max="0.95" step="0.01"
+              value={threshold}
+              onChange={(e) => setThreshold(Number(e.target.value))}
+              className="w-full"
+            />
+            <p className="text-xs text-ink-900/40 mt-1">
+              Lower catches more possible repeats (with more false positives to review); higher is
+              stricter. 72% is a reasonable default for MCQ-length text.
+            </p>
+          </div>
+        )}
+
+        <Button variant="primary" disabled={saving}>{saving ? 'Saving…' : 'Save duplicate detection settings'}</Button>
+      </form>
+    </Card>
+  );
+}
 
 const PROVIDERS = [
   {
@@ -137,6 +218,8 @@ export default function OcrSettings() {
           especially watermarked scans or subscripted formulas. Every extracted question still requires
           review before saving, regardless of which engine produced it.
         </p>
+
+        <DuplicateDetectionSettings />
       </div>
     </AppShell>
   );

@@ -87,12 +87,28 @@ router.post('/:id/submit-for-approval', requirePermission('paper.create'), async
   }
 });
 
-// POST /api/question-papers/:id/approve  { stage: 'SME'|'SUPER_ADMIN', action, comment }
+const VALID_ANSWER_KEY_POLICIES = ['NONE', 'EMBEDDED', 'SEPARATE_SECTION'];
+
+// POST /api/question-papers/:id/approve  { stage: 'SME'|'SUPER_ADMIN', action, comment, answerKeyPolicy? }
 // Super Admin may approve at either stage themselves, per requirements.
+// When finally approving at the SUPER_ADMIN stage, this is also where the
+// answer-key publish decision gets made ("should this paper's exports
+// include the answer key, and if so, embedded or as a separate section?")
+// — answerKeyPolicy is required at that specific transition; it can still
+// be revised afterwards via PATCH /:id/answer-key-policy below.
 router.post('/:id/approve', requirePermission('paper.approve'), async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { stage, action, comment } = req.body; // action: APPROVED | CHANGES_REQUESTED
+    const { stage, action, comment, answerKeyPolicy } = req.body; // action: APPROVED | CHANGES_REQUESTED
+
+    if (stage === 'SUPER_ADMIN' && action === 'APPROVED') {
+      if (!VALID_ANSWER_KEY_POLICIES.includes(answerKeyPolicy)) {
+        return res.status(400).json({
+          error: 'ANSWER_KEY_POLICY_REQUIRED',
+          message: 'Choose whether this paper should publish an answer key (NONE, EMBEDDED, or SEPARATE_SECTION) before giving final approval.',
+        });
+      }
+    }
 
     await prisma.paperApproval.create({
       data: { paperId: id, approverId: req.user.id, stage, action, comment },
@@ -103,7 +119,16 @@ router.post('/:id/approve', requirePermission('paper.approve'), async (req, res,
     else if (stage === 'SME') newStatus = 'PENDING_SUPER_ADMIN_APPROVAL';
     else newStatus = 'APPROVED';
 
-    const paper = await prisma.questionPaper.update({ where: { id }, data: { status: newStatus } });
+    const paper = await prisma.questionPaper.update({
+      where: { id },
+      data: {
+        status: newStatus,
+        ...(newStatus === 'APPROVED' && {
+          answerKeyPolicy,
+          answerKeyPolicySetAt: new Date(),
+        }),
+      },
+    });
 
     if (newStatus === 'PENDING_SUPER_ADMIN_APPROVAL') {
       const superAdmins = await prisma.user.findMany({ where: { roles: { some: { role: { name: 'Super Admin' } } } } });
@@ -112,7 +137,31 @@ router.post('/:id/approve', requirePermission('paper.approve'), async (req, res,
       }
     }
 
-    await req.audit('PAPER_APPROVE', 'QuestionPaper', id, { stage, action, comment });
+    await req.audit('PAPER_APPROVE', 'QuestionPaper', id, { stage, action, comment, answerKeyPolicy });
+    res.json(paper);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /api/question-papers/:id/answer-key-policy  { policy }
+// Lets Super Admin revise the answer-key publish decision after final
+// approval too (e.g. an already-approved paper needs its policy flipped
+// from NONE to SEPARATE_SECTION ahead of a re-export) without re-running
+// the whole approval workflow.
+router.patch('/:id/answer-key-policy', requirePermission('paper.approve'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { policy } = req.body;
+    if (!VALID_ANSWER_KEY_POLICIES.includes(policy)) {
+      return res.status(400).json({ error: 'INVALID_POLICY', message: `policy must be one of: ${VALID_ANSWER_KEY_POLICIES.join(', ')}` });
+    }
+
+    const paper = await prisma.questionPaper.update({
+      where: { id },
+      data: { answerKeyPolicy: policy, answerKeyPolicySetAt: new Date() },
+    });
+    await req.audit('PAPER_ANSWER_KEY_POLICY_UPDATE', 'QuestionPaper', id, { policy });
     res.json(paper);
   } catch (err) {
     next(err);

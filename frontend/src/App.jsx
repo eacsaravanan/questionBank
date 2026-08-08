@@ -3,6 +3,9 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import RoleGuard from './components/RoleGuard.jsx';
 
 import Login from './pages/auth/Login.jsx';
+import ForgotPassword from './pages/auth/ForgotPassword.jsx';
+import ResetPassword from './pages/auth/ResetPassword.jsx';
+import Profile from './pages/account/Profile.jsx';
 
 import SuperAdminDashboard from './pages/superadmin/Dashboard.jsx';
 import UserManagement from './pages/superadmin/UserManagement.jsx';
@@ -30,6 +33,12 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
+
+      {/* No roles restriction — any authenticated user (every role) can
+          reach their own profile / change their own password. */}
+      <Route path="/profile" element={guarded(undefined, <Profile />)} />
 
       <Route path="/super-admin" element={guarded(['Super Admin'], <SuperAdminDashboard />)} />
       <Route path="/super-admin/users" element={guarded(['Super Admin'], <UserManagement />)} />

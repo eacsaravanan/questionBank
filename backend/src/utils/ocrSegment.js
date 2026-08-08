@@ -17,14 +17,61 @@
  *     instructions) are dropped rather than surfaced as a fake question.
  *   - Blocks with fewer than 2 detected options are dropped too — these
  *     are usually instructions or stray numbered text, not real MCQs.
+ *   - A new question boundary is only accepted when its number is
+ *     STRICTLY GREATER than the last accepted question number (or it's
+ *     the very first candidate in the document). This is what stops a
+ *     numbered sub-statement inside a statement-based question (e.g.
+ *     "1. In 2019, World Environment Day..." / "2. The Theme for...")
+ *     from being mistaken for a new question — those numbers restart low
+ *     mid-document, so they fail the "must increase" test and stay part
+ *     of the question they belong to. Trade-off: this assumes numbering
+ *     is monotonically increasing within a single upload, which holds for
+ *     every normal single-paper import; it does NOT hold if you
+ *     concatenate two separately-numbered papers into one upload — import
+ *     those as separate uploads instead.
+ *   - Every question's English text is scanned for a short trailing
+ *     source code (e.g. "CCS4T/19") — the exam/paper code that compiled
+ *     practice papers print after each reused question. When found, it's
+ *     stripped out of the question body and returned separately as
+ *     `sourceTag`, ready to pre-fill "Previously asked in".
  *   - Everything it extracts is returned with needsReview: true and the
  *     original raw block, so a human always reviews/corrects before the
  *     question enters the approval workflow.
  */
 
 const QUESTION_START = /^(?:Q(?:uestion)?\.?\s*)?(\d{1,3})[.).:]\s+/;
-const OPTION_START = /^[\(\[]?([A-Da-d]|[1-4]|[i-iv]+)[\).\]]\s+/;
 const TAMIL_RE = /[\u0B80-\u0BFF]/;
+
+// Option markers, tried in order. Numeric and roman-numeral schemes
+// deliberately REQUIRE parentheses/brackets — without that, a bare "1."
+// or "2." is indistinguishable from a numbered sub-statement inside a
+// statement-based question ("1. In 2019, World Environment Day..." /
+// "2. The Theme for..."), and would wrongly be read as the start of the
+// answer options instead of stem content. Lettered options (the vast
+// majority of real MCQs) are still recognized whether parenthesized or
+// bare, since "A)" / "(A)" / "A." all appear in the wild.
+const OPTION_START_PATTERNS = [
+  /^\(([A-Da-d])\)\s*/, // (A) or (a)
+  /^\[([A-Da-d])\]\s*/, // [A] or [a]
+  /^([A-Da-d])[.)]\s+/, // A)  or  A.
+  /^\((\d)\)\s*/, // (1)  — bare "1." is NOT treated as an option, see above
+  /^\(([ivx]{1,4})\)\s*/i, // (i) / (ii) / (iii) / (iv)
+];
+
+function matchOptionStart(line) {
+  for (const re of OPTION_START_PATTERNS) {
+    const m = line.match(re);
+    if (m) return { label: m[1], full: m[0] };
+  }
+  return null;
+}
+
+// Matches a short trailing exam/paper code like "CCS4T/19", "TNPSC-G4/2019",
+// "RRB2020" at the very end of a line — 2-3 letters/digits, optional
+// separator, optional year. Deliberately narrow (uppercase + digits only,
+// 3-12 chars) so it doesn't accidentally eat ordinary sentence-ending
+// abbreviations.
+const SOURCE_TAG = /\b([A-Z]{2,8}\d{0,3}[A-Z]?\s*\/\s*\d{2,4}|[A-Z]{2,8}\d{2,4})\s*$/;
 
 export function segmentOcrText(rawText) {
   const lines = rawText
@@ -34,12 +81,18 @@ export function segmentOcrText(rawText) {
 
   const blocks = [];
   let current = null;
+  let lastAcceptedNumber = null;
 
   for (const line of lines) {
     const qMatch = line.match(QUESTION_START);
-    if (qMatch) {
+    const candidateNumber = qMatch ? parseInt(qMatch[1], 10) : null;
+    const isNewQuestionStart =
+      qMatch && (lastAcceptedNumber === null || candidateNumber > lastAcceptedNumber);
+
+    if (isNewQuestionStart) {
       if (current) blocks.push(current);
       current = { number: qMatch[1], lines: [line.replace(QUESTION_START, '')] };
+      lastAcceptedNumber = candidateNumber;
     } else if (current) {
       current.lines.push(line);
     }
@@ -55,21 +108,117 @@ export function segmentOcrText(rawText) {
 
 function splitQuestionAndOptions(lines) {
   const questionParts = [];
-  const options = [];
+  const optionLines = [];
   let inOptions = false;
 
   for (const line of lines) {
-    const optMatch = line.match(OPTION_START);
-    if (optMatch) {
-      inOptions = true;
-      options.push({ label: optMatch[1].toUpperCase(), text: line.replace(OPTION_START, '') });
-    } else if (inOptions && options.length > 0) {
-      options[options.length - 1].text += ' ' + line; // wrapped continuation
-    } else {
-      questionParts.push(line);
+    if (!inOptions && matchOptionStart(line)) inOptions = true;
+    (inOptions ? optionLines : questionParts).push(line);
+  }
+
+  return {
+    questionText: questionParts.join(' ').trim(),
+    options: splitOptionsBlob(optionLines.join(' ')),
+  };
+}
+
+const LABEL_SCHEMES = [
+  ['A', 'B', 'C', 'D'],
+  ['a', 'b', 'c', 'd'],
+  ['1', '2', '3', '4'],
+  ['i', 'ii', 'iii', 'iv'],
+];
+
+/**
+ * Splits a blob of "options region" text into individual options. Source
+ * PDFs lay options out two different ways — one per line, or several
+ * packed onto a single physical row (e.g. a short-answer question like
+ * "(A) 6.5%   (B) 5.5%   (C) 7.5%   (D) 8.5%") — this handles both by
+ * locating every marker that continues the label scheme detected from the
+ * FIRST marker in the blob (A/B/C/D, a/b/c/d, 1/2/3/4, or i/ii/iii/iv),
+ * in strict order, wherever it falls, and slicing the text between
+ * consecutive accepted markers. A marker is only accepted if it's the
+ * next one expected in sequence — this is what stops a stray "(A)"
+ * reappearing later inside option text (e.g. a chemical formula) from
+ * being misread as a 5th option.
+ */
+function splitOptionsBlob(blob) {
+  const first = matchOptionStart(blob);
+  if (!first) return [];
+  const scheme =
+    LABEL_SCHEMES.find((seq) => seq.some((label) => label.toLowerCase() === first.label.toLowerCase())) ||
+    LABEL_SCHEMES[0];
+  const markerRe = buildMarkerRegex(scheme);
+
+  const accepted = [];
+  let expectedIdx = 0;
+  let repeatIndex = null; // where a *second* full cycle starts, if the whole
+  // option set is repeated verbatim (see below)
+  for (const m of blob.matchAll(markerRe)) {
+    const label = (m.groups.paren || m.groups.bare || '').toLowerCase();
+    if (expectedIdx < scheme.length) {
+      if (label === scheme[expectedIdx].toLowerCase()) {
+        accepted.push(m);
+        expectedIdx++;
+      }
+    } else if (label === scheme[0].toLowerCase()) {
+      // A full A..D cycle is already collected and a fresh "A" shows up
+      // again — this happens when the same options are mirrored for the
+      // second language but contain no script characters of their own
+      // (e.g. options that are pure chemical formulas/numbers, so the
+      // language-classification pass above has no way to tell the two
+      // rows apart). Stop here instead of folding the repeat into the
+      // last option's text.
+      repeatIndex = m.index;
+      break;
     }
   }
-  return { questionText: questionParts.join(' ').trim(), options };
+  if (accepted.length === 0) return [];
+
+  const options = [];
+  for (let i = 0; i < accepted.length; i++) {
+    const start = accepted[i].index + accepted[i][0].length;
+    const end = i + 1 < accepted.length ? accepted[i + 1].index : repeatIndex ?? blob.length;
+    options.push({ label: scheme[i].toUpperCase(), text: blob.slice(start, end).trim() });
+  }
+  return options;
+}
+
+/**
+ * Builds the "find every option marker in this scheme" regex used above.
+ * Numeric and roman-numeral schemes require enclosing parens/brackets
+ * (same reasoning as OPTION_START_PATTERNS — a bare "2" is too easy to
+ * false-match inside ordinary text). Letter schemes accept parens/
+ * brackets OR "A." / "A)", but never a fully bare letter — that would
+ * false-match any standalone capital letter used as a label inside an
+ * option's own text (e.g. "Point A and Point B").
+ */
+function buildMarkerRegex(scheme) {
+  const escaped = [...scheme]
+    .sort((a, b) => b.length - a.length) // longest first: "iii" before "i"
+    .map((l) => l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const alt = escaped.join('|');
+  const isLetterScheme = scheme === LABEL_SCHEMES[0] || scheme === LABEL_SCHEMES[1];
+  return isLetterScheme
+    ? new RegExp(`(?:[\\(\\[](?<paren>${alt})[\\)\\]]|\\b(?<bare>${alt})[.)])\\s*`, 'gi')
+    : new RegExp(`[\\(\\[](?<paren>${alt})[\\)\\]]\\s*`, 'gi');
+}
+
+/**
+ * Pulls a trailing source/paper code (e.g. "CCS4T/19") off the END of the
+ * English question text, if present, and returns { questionText, sourceTag }
+ * with the tag removed from the body. Compiled practice papers print this
+ * right after each reused question to show which original exam it's from —
+ * we lift it out so it can pre-fill "Previously asked in" instead of
+ * getting stuck inside the question text itself.
+ */
+function extractSourceTag(questionText) {
+  const match = questionText.match(SOURCE_TAG);
+  if (!match) return { questionText, sourceTag: null };
+  return {
+    questionText: questionText.slice(0, match.index).trim(),
+    sourceTag: match[1].replace(/\s+/g, ''),
+  };
 }
 
 function parseBlock(block) {
@@ -81,6 +230,7 @@ function parseBlock(block) {
 
   const en = splitQuestionAndOptions(englishLines);
   const ta = splitQuestionAndOptions(tamilLines);
+  const { questionText: englishQuestionText, sourceTag } = extractSourceTag(en.questionText);
 
   // English and Tamil options are paired by POSITION (1st English option
   // with 1st Tamil option, and so on) since both should list A, B, C, D in
@@ -98,9 +248,10 @@ function parseBlock(block) {
 
   return {
     questionNumber: block.number,
-    questionText: en.questionText,
+    questionText: englishQuestionText,
     questionTextTamil: ta.questionText,
     options,
+    sourceTag, // e.g. "CCS4T/19", or null — pre-fills "Previously asked in"
     rawText: block.lines.join('\n'),
     needsReview: true,
   };
