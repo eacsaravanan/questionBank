@@ -83,6 +83,7 @@ model User {
   sessions          Session[]
   passwordResetTokens PasswordResetToken[]
   confirmedAppearances QuestionAppearance[] @relation("AppearanceConfirmedBy")
+  ocrReviewsHandled OcrReviewQueue[] @relation("OcrReviewedBy")
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +180,7 @@ model Subject {
   units       Unit[]
   questions   Question[]
   assignments SmeSubjectAssignment[]
+  ocrReviewQueueItems OcrReviewQueue[]
 
   @@unique([examId, name])
 }
@@ -296,6 +298,7 @@ model Question {
   paperItems   QuestionPaperItem[]
   attemptAnswers AttemptAnswer[]
   appearances  QuestionAppearance[]
+  ocrReviewSource OcrReviewQueue? @relation("OcrReviewPublished")
 
   @@index([subjectId, status])
   @@index([status])
@@ -647,4 +650,52 @@ model SystemConfig {
   value     Json
   isSecret  Boolean  @default(false) // if true, value is encrypted at app layer before storage
   updatedAt DateTime @updatedAt
+}
+
+
+enum OcrReviewStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  NEEDS_RESCAN
+}
+
+model OcrReviewQueue {
+  id               String          @id @default(uuid())
+  sourcePaperName  String
+  sourcePage       Int
+  questionNumber   Int?
+  questionType     QuestionType
+
+  subjectId        String?
+  subject          Subject?        @relation(fields: [subjectId], references: [id])
+
+  translationsJson Json
+  optionsJson      Json
+  matchListJson    Json?
+
+  mathOcrLatex     String?         @db.Text
+  boundingBoxJson  Json?
+  pageImageRef     String?
+
+  confidenceScore  Float?
+  reviewBadge      String          @default("engines_disagreed")
+  primaryEngineRaw   String?       @db.Text
+  secondaryEngineRaw String?       @db.Text
+  llmSuggestionJson  Json?
+
+  status             OcrReviewStatus @default(PENDING_REVIEW)
+  reviewedById       String?
+  reviewedBy         User?           @relation("OcrReviewedBy", fields: [reviewedById], references: [id])
+  reviewedAt         DateTime?
+  rejectionReason    String?
+
+  publishedQuestionId String?        @unique
+  publishedQuestion   Question?      @relation("OcrReviewPublished", fields: [publishedQuestionId], references: [id])
+
+  createdAt          DateTime        @default(now())
+
+  @@index([status])
+  @@index([reviewBadge])
+  @@index([sourcePaperName, sourcePage])
 }

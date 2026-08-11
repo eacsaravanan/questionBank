@@ -10,7 +10,12 @@ import { runOcr, getOcrConfig } from '../utils/ocrProviders.js';
 import { extractDocxText, extractPdfText } from '../utils/documentExtract.js';
 import { detectDuplicates } from '../utils/duplicateDetection.js';
 import { prisma } from '../config/db.js';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import path from 'path';
+import os from 'os';
 
+const execAsync = promisify(exec);
 const router = Router();
 router.use(authenticate);
 
@@ -36,6 +41,38 @@ async function preprocessForOcr(inputPath) {
   return outputPath;
 }
 
+/**
+ * Rasterizes a PDF's pages to PNG images via pdftoppm (poppler-utils,
+ * already installed in the backend image) for scanned/image-only PDFs
+ * whose text layer is empty ΓÇö extractPdfText() can tell us that
+ * (looksDigital: false), but can't extract anything from them since
+ * there's no text to read. This is the OCR fallback path.
+ *
+ * Honors the SAME fromPage/toPage/skipPages contract as extractPdfText,
+ * so a scanned and a digital PDF behave identically to the caller ΓÇö
+ * pdftoppm's -f/-l flags handle the page RANGE directly; skipPages is
+ * filtered out of the resulting file list afterward since pdftoppm has
+ * no "skip these specific pages" option of its own.
+ */
+async function rasterizeScannedPdfPages(pdfPath, { fromPage, toPage, skipPages = new Set(), totalPages }) {
+  const start = fromPage ? Math.max(1, fromPage) : 1;
+  const end = toPage ? Math.min(totalPages, toPage) : totalPages;
+
+  const outDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ocr-pdf-'));
+  const outPrefix = path.join(outDir, 'page');
+  await execAsync(`pdftoppm -r 300 -png -f ${start} -l ${end} "${pdfPath}" "${outPrefix}"`);
+
+  const files = (await fs.readdir(outDir)).filter((f) => f.endsWith('.png')).sort();
+  const pages = [];
+  for (const file of files) {
+    const match = file.match(/-(\d+)\.png$/);
+    const pageNum = match ? parseInt(match[1], 10) : null;
+    if (pageNum !== null && skipPages.has(pageNum)) continue;
+    pages.push({ pageNum, imagePath: path.join(outDir, file) });
+  }
+  return { pages, tempDir: outDir };
+}
+
 function parseSkipPages(raw) {
   if (!raw) return new Set();
   return new Set(
@@ -58,6 +95,7 @@ function parseSkipPages(raw) {
  */
 router.post('/ocr-extract', requirePermission('question.create'), uploadOcrSource.single('image'), async (req, res, next) => {
   let preprocessedPath;
+  let scannedPdfTempDir;
   try {
     if (!req.file) return res.status(400).json({ error: 'FILE_REQUIRED' });
     const sourceRef = `/uploads/ocr-source/${req.file.filename}`;
@@ -74,31 +112,53 @@ router.post('/ocr-extract', requirePermission('question.create'), uploadOcrSourc
       meta = { source: 'docx-text-layer' };
 
     } else if (mimeType === 'application/pdf') {
+      const forceOcr = true; // TEMPORARY re-enabled ΓÇö always OCR every PDF until the real checkbox exists
       const fromPage = req.body.fromPage ? parseInt(req.body.fromPage, 10) : undefined;
       const toPage = req.body.toPage ? parseInt(req.body.toPage, 10) : undefined;
       const skipPages = parseSkipPages(req.body.skipPages);
 
       const extracted = await extractPdfText(req.file.path, { fromPage, toPage, skipPages });
 
-      if (!extracted.looksDigital) {
-        // This PDF's text layer is empty/sparse — it's a scanned or
-        // image-only PDF. Per-page OCR for scanned PDFs isn't supported
-        // in this version (it needs image-rendering infrastructure this
-        // build doesn't include yet). Being upfront about that here
-        // rather than returning empty/garbage results.
-        return res.status(422).json({
-          error: 'SCANNED_PDF_NOT_SUPPORTED',
-          message:
-            `This PDF appears to be scanned/image-only (page ${extracted.pagesProcessed} averaged very little extractable text) — ` +
-            `OCR on scanned PDF pages isn't supported yet. For now: convert the pages you need to PNG/JPEG images ` +
-            `(e.g. a screenshot, or "Export as image" in your PDF viewer) and upload those instead — the image ` +
-            `upload path works for scanned content.`,
-          totalPages: extracted.totalPages,
+      if (forceOcr || !extracted.looksDigital) {
+        // Scanned/image-only PDF ΓÇö rasterize the requested page range and
+        // run each page through the same OCR pipeline used for single
+        // image uploads, then concatenate results in page order before
+        // handing off to the segmenter, exactly as extractPdfText does for
+        // digital PDFs below.
+        const { pages, tempDir } = await rasterizeScannedPdfPages(req.file.path, {
+          fromPage, toPage, skipPages, totalPages: extracted.totalPages,
         });
-      }
+        scannedPdfTempDir = tempDir; // cleaned up in `finally` below
 
-      rawText = extracted.text;
-      meta = { source: 'pdf-text-layer', totalPages: extracted.totalPages, pagesProcessed: extracted.pagesProcessed };
+        const ocrConfig = await getOcrConfig();
+        const pageTexts = [];
+        const pageConfidences = [];
+        for (const page of pages) {
+          let pagePreprocessed;
+          try {
+            pagePreprocessed = await preprocessForOcr(page.imagePath);
+          } catch (preErr) {
+            logger.warn({ err: preErr, page: page.pageNum }, 'OCR preprocessing failed for scanned PDF page, using raw render');
+            pagePreprocessed = page.imagePath;
+          }
+          const result = await runOcr(pagePreprocessed, ocrConfig);
+          pageTexts.push(result.text);
+          pageConfidences.push(result.confidence);
+        }
+
+        rawText = pageTexts.join('\n');
+        confidence = pageConfidences.length
+          ? pageConfidences.reduce((a, b) => a + b, 0) / pageConfidences.length
+          : null;
+        meta = {
+          source: `ocr:pdf-scan:${ocrConfig.provider}`,
+          totalPages: extracted.totalPages,
+          pagesProcessed: pages.length,
+        };
+      } else {
+        rawText = extracted.text;
+        meta = { source: 'pdf-text-layer', totalPages: extracted.totalPages, pagesProcessed: extracted.pagesProcessed };
+      }
 
     } else {
       // Image path — run through the configured OCR provider (Tesseract
@@ -183,6 +243,9 @@ router.post('/ocr-extract', requirePermission('question.create'), uploadOcrSourc
   } finally {
     if (preprocessedPath && preprocessedPath !== req.file?.path) {
       fs.unlink(preprocessedPath).catch(() => {});
+    }
+    if (scannedPdfTempDir) {
+      fs.rm(scannedPdfTempDir, { recursive: true, force: true }).catch(() => {});
     }
   }
 });

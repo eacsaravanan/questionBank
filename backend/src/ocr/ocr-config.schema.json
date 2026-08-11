@@ -1,0 +1,54 @@
+{
+  "$comment": "Stored as the value of ocr_settings.config (JSON column) in your existing OCR settings table. ocr_settings.engine picks which sub-object under `providers` is active. Keep ALL provider configs stored simultaneously so switching engines in the UI doesn't lose the other providers' saved settings.",
+  "engine": "google_document_ai",
+  "providers": {
+    "google_cloud_vision": {
+      "authMode": "service_account",
+      "projectId": "tnpsocrengine",
+      "note": "Uses GOOGLE_APPLICATION_CREDENTIALS on the server. No client-exposed key."
+    },
+    "google_document_ai": {
+      "authMode": "service_account",
+      "projectId": "tnpsocrengine",
+      "projectNumber": "432162666291",
+      "location": "asia-south1",
+      "processorId": "45a7d42f0f3053a4",
+      "processorType": "FORM_PARSER_OR_OCR",
+      "note": "Service account JSON lives only in GOOGLE_APPLICATION_CREDENTIALS on the server, never sent to the browser."
+    },
+    "mistral_ocr": {
+      "authMode": "api_key",
+      "apiKeyRef": "MISTRAL_API_KEY",
+      "model": "mistral-ocr-latest"
+    },
+    "sarvam_vision": {
+      "authMode": "api_key",
+      "apiKeyRef": "SARVAM_API_KEY",
+      "endpoint": "https://api.sarvam.ai/parse"
+    },
+    "mathpix": {
+      "authMode": "api_key",
+      "appIdRef": "MATHPIX_APP_ID",
+      "appKeyRef": "MATHPIX_APP_KEY",
+      "note": "Used as a secondary pass for math-only crops, not full pages."
+    },
+    "custom_api": {
+      "authMode": "api_key_secret",
+      "endpointUrl": "",
+      "apiKeyRef": "",
+      "secretKeyRef": "",
+      "contract": {
+        "request": { "imageBase64": "string", "mimeType": "string" },
+        "response": { "text": "string", "confidence": "number (optional)" }
+      }
+    }
+  },
+  "secondaryEngine": "google_cloud_vision",
+  "mathEngine": "mathpix",
+  "routing": {
+    "$comment": "How ingestion decides which engine handles which crop",
+    "fullPage": "engine",
+    "compareWith": "secondaryEngine",
+    "mathCrops": "mathEngine"
+  }
+}

@@ -103,6 +103,11 @@ const PROVIDERS = [
     name: 'Custom API',
     blurb: "Point at any OCR service you run or subscribe to — including a self-hosted PaddleOCR Python microservice, Azure Computer Vision, AWS Textract, or anything else. Requires an endpoint that accepts { imageBase64, mimeType } and returns { text }.",
   },
+  {
+    id: 'document-ai',
+    name: 'Google Document AI',
+    blurb: 'Cloud API with layout/table detection, not just flat text ΓÇö better suited to structured content like match-the-following tables. Configured on the server (service account), not here. Similar accuracy and pricing profile to Google Cloud Vision.',
+  },
 ];
 
 export default function OcrSettings() {

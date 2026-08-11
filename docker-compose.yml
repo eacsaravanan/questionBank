@@ -45,11 +45,21 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
       NODE_ENV: production
       PORT: 4000
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/tnpsc-ocr-service.json
+      GOOGLE_CLOUD_PROJECT_ID: ${GOOGLE_CLOUD_PROJECT_ID}
+      GOOGLE_DOCUMENT_AI_LOCATION: ${GOOGLE_DOCUMENT_AI_LOCATION:-asia-south1}
+      GOOGLE_DOCUMENT_AI_PROCESSOR_ID: ${GOOGLE_DOCUMENT_AI_PROCESSOR_ID}
+      MATHPIX_APP_ID: ${MATHPIX_APP_ID}
+      MATHPIX_APP_KEY: ${MATHPIX_APP_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      RECONCILIATION_MODEL: ${RECONCILIATION_MODEL:-claude-sonnet-5}
     ports:
       - "4000:4000"
     volumes:
+      - ./backend:/app
+      - /app/node_modules
       - qbank_uploads:/app/uploads
-
+      - ./backend/secrets/tnpsc-ocr-service.json:/run/secrets/tnpsc-ocr-service.json:ro
   frontend:
     build: ./frontend
     restart: unless-stopped
