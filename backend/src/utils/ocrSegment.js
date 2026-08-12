@@ -41,6 +41,36 @@
 
 const QUESTION_START = /^(?:Q(?:uestion)?\.?\s*)?(\d{1,3})[.).:]\s+/;
 const TAMIL_RE = /[\u0B80-\u0BFF]/;
+const MATCH_TRIGGER = /match\s+the\s+following/i;
+const MATCH_ROW = /^\(([a-dA-D])\)\s*(.*?)\s*(\d+)\.\s*(.+)$/;
+const CODES_TRIGGER = /^codes?\s*:?/i;
+
+function tryParseMatchTheFollowing(lines) {
+  if (!lines.length) return null;
+  const looksLikeMatch =
+    MATCH_TRIGGER.test(lines.slice(0, 2).join(' ')) ||
+    lines.filter((l) => MATCH_ROW.test(l)).length >= 2;
+  if (!looksLikeMatch) return null;
+
+  let i = 0;
+  let stem = '';
+  if (!MATCH_ROW.test(lines[0])) { stem = lines[0]; i = 1; }
+
+  const leftItems = [];
+  const rightItems = [];
+  for (; i < lines.length; i++) {
+    const m = lines[i].match(MATCH_ROW);
+    if (!m) break;
+    leftItems.push({ label: m[1].toLowerCase(), text: m[2].trim() });
+    rightItems.push({ number: m[3], text: m[4].trim() });
+  }
+
+  while (i < lines.length && (CODES_TRIGGER.test(lines[i]) || /^\([a-d]\)\s*\([a-d]\)/i.test(lines[i]))) i++;
+
+  const remainder = lines.slice(i).join(' ');
+  const { options } = splitOptionsBlob(remainder);
+  return { stem, leftItems, rightItems, options };
+}
 
 // Option markers, tried in order. Numeric and roman-numeral schemes
 // deliberately REQUIRE parentheses/brackets — without that, a bare "1."
@@ -103,10 +133,24 @@ export function segmentOcrText(rawText) {
 
   return blocks
     .map((block) => parseBlock(block))
-    .filter((q) => q.options.length >= 2); // drop non-MCQ noise blocks
+    /* .filter((q) => q.options.length >= 2);  *** Newly added line below 12-08-2026 - 12:45 pm*/
+	.filter((q) => q.questionType === 'MATCH_FOLLOWING' || q.options.length >= 2); // drop non-MCQ noise blocks
 }
 
 function splitQuestionAndOptions(lines) {
+  const matchResult = tryParseMatchTheFollowing(lines);
+
+  if (matchResult) {
+    return {
+      questionText: matchResult.stem,
+      options: matchResult.options,
+      repeatedOptions: [],
+      matchLeftItems: matchResult.leftItems,
+      matchRightItems: matchResult.rightItems,
+      isMatchFollowing: true,
+    };
+  }
+
   const questionParts = [];
   const optionLines = [];
   let inOptions = false;
@@ -116,9 +160,13 @@ function splitQuestionAndOptions(lines) {
     (inOptions ? optionLines : questionParts).push(line);
   }
 
+  const { options, repeatedOptions } =
+    splitOptionsBlob(optionLines.join(' '));
+
   return {
     questionText: questionParts.join(' ').trim(),
-    options: splitOptionsBlob(optionLines.join(' ')),
+    options,
+    repeatedOptions,
   };
 }
 
@@ -144,7 +192,7 @@ const LABEL_SCHEMES = [
  */
 function splitOptionsBlob(blob) {
   const first = matchOptionStart(blob);
-  if (!first) return [];
+  if (!first) return { options: [], repeatedOptions: [] };
   const scheme =
     LABEL_SCHEMES.find((seq) => seq.some((label) => label.toLowerCase() === first.label.toLowerCase())) ||
     LABEL_SCHEMES[0];
@@ -152,8 +200,7 @@ function splitOptionsBlob(blob) {
 
   const accepted = [];
   let expectedIdx = 0;
-  let repeatIndex = null; // where a *second* full cycle starts, if the whole
-  // option set is repeated verbatim (see below)
+  let repeatIndex = null;
   for (const m of blob.matchAll(markerRe)) {
     const label = (m.groups.paren || m.groups.bare || '').toLowerCase();
     if (expectedIdx < scheme.length) {
@@ -162,18 +209,11 @@ function splitOptionsBlob(blob) {
         expectedIdx++;
       }
     } else if (label === scheme[0].toLowerCase()) {
-      // A full A..D cycle is already collected and a fresh "A" shows up
-      // again — this happens when the same options are mirrored for the
-      // second language but contain no script characters of their own
-      // (e.g. options that are pure chemical formulas/numbers, so the
-      // language-classification pass above has no way to tell the two
-      // rows apart). Stop here instead of folding the repeat into the
-      // last option's text.
       repeatIndex = m.index;
       break;
     }
   }
-  if (accepted.length === 0) return [];
+  if (accepted.length === 0) return { options: [], repeatedOptions: [] };
 
   const options = [];
   for (let i = 0; i < accepted.length; i++) {
@@ -181,7 +221,18 @@ function splitOptionsBlob(blob) {
     const end = i + 1 < accepted.length ? accepted[i + 1].index : repeatIndex ?? blob.length;
     options.push({ label: scheme[i].toUpperCase(), text: blob.slice(start, end).trim() });
   }
-  return options;
+
+  // A second A..D cycle right after the first usually means the
+  // Tamil-labelled options were pure formulas/numbers with no Tamil
+  // script (e.g. "K2Cr2O7"), so the script-based classifier below
+  // couldn't tell the two rows apart. Recover the second cycle instead
+  // of discarding it.
+  let repeatedOptions = [];
+  if (repeatIndex !== null) {
+    repeatedOptions = splitOptionsBlob(blob.slice(repeatIndex)).options;
+  }
+
+  return { options, repeatedOptions };
 }
 
 /**
@@ -232,27 +283,38 @@ function parseBlock(block) {
   const ta = splitQuestionAndOptions(tamilLines);
   const { questionText: englishQuestionText, sourceTag } = extractSourceTag(en.questionText);
 
-  // English and Tamil options are paired by POSITION (1st English option
-  // with 1st Tamil option, and so on) since both should list A, B, C, D in
-  // the same order — this is what actually merges "K2Cr2O7" (English row)
-  // with its Tamil translation into ONE option instead of two.
-  const count = Math.max(en.options.length, ta.options.length);
+  // Fall back to the recovered second cycle when the Tamil block itself
+  // produced no options -- see splitOptionsBlob() above.
+  const tamilOptions = ta.options.length ? ta.options : en.repeatedOptions;
+
+  const count = Math.max(en.options.length, tamilOptions.length);
   const options = [];
   for (let i = 0; i < count; i++) {
     options.push({
-      label: en.options[i]?.label || ta.options[i]?.label || String.fromCharCode(65 + i),
+      label: en.options[i]?.label || tamilOptions[i]?.label || String.fromCharCode(65 + i),
       text: en.options[i]?.text || '',
-      textTamil: ta.options[i]?.text || '',
+      textTamil: tamilOptions[i]?.text || '',
     });
   }
 
   return {
-    questionNumber: block.number,
-    questionText: englishQuestionText,
-    questionTextTamil: ta.questionText,
-    options,
-    sourceTag, // e.g. "CCS4T/19", or null — pre-fills "Previously asked in"
-    rawText: block.lines.join('\n'),
-    needsReview: true,
-  };
+	  questionNumber: block.number,
+	  questionText: englishQuestionText,
+	  questionTextTamil: ta.questionText,
+	  options,
+	  sourceTag,
+	  rawText: block.lines.join('\n'),
+	  needsReview: true,
+
+	  questionType:
+		en.isMatchFollowing || ta.isMatchFollowing
+		  ? 'MATCH_FOLLOWING'
+		  : 'SINGLE_MCQ',
+
+	  matchLeftItemsEn: en.matchLeftItems || null,
+	  matchRightItemsEn: en.matchRightItems || null,
+
+	  matchLeftItemsTa: ta.matchLeftItems || null,
+	  matchRightItemsTa: ta.matchRightItems || null,
+	};
 }

@@ -53,10 +53,10 @@ function QueueItem({ item, subjects, onChange, onRemove, onSave, onSubmitReview 
         onChange={(v) => onChange({ ...item, englishBody: v })}
       />
       <FormattableInput
-        label="Question text — Tamil"
-        value={item.tamilBody}
-        onChange={(v) => onChange({ ...item, tamilBody: v })}
+        value={opt.textTamil || ''}
+        onChange={(v) => onChange({ ...item, options: item.options.map((o, i) => (i === idx ? { ...o, textTamil: v } : o)) })}
         mode="tamil-live"
+        placeholder={`Option ${opt.label || idx + 1} — Tamil`}
       />
 
       <PreviouslyAskedIn
@@ -67,9 +67,67 @@ function QueueItem({ item, subjects, onChange, onRemove, onSave, onSubmitReview 
         excludeQuestionId={item.questionId}
       />
 
-      <label className="block text-xs font-medium text-ink-900/70 mb-1 mt-2">Options</label>
-      <div className="space-y-3">
-        {item.options.map((opt, idx) => (
+      {!item.hasDiagram &&
+	  /given below|shown below|figure below|diagram below|shown here/i.test(item.englishBody) && (
+		<div className="mb-3 px-3 py-2 rounded-lg bg-gold-500/10 border border-gold-500/30 text-xs text-ink-900/70">
+		  This question's text suggests it may reference an image or diagram — check the source page and
+		  mark "Has image" below if needed.
+		</div>
+	  )}
+
+	<label className="flex items-center gap-2 text-xs font-medium text-ink-900/70 mb-2">
+	  <input
+		type="checkbox"
+		checked={!!item.hasDiagram}
+		onChange={(e) =>
+		  onChange({
+			...item,
+			hasDiagram: e.target.checked,
+			diagramFile: e.target.checked ? item.diagramFile : null,
+		  })
+		}
+	  />
+	  This question has an image / diagram
+	</label>
+
+	{item.hasDiagram && (
+	  <div className="mb-3 p-3 rounded-lg border border-dashed border-ink-900/20">
+		{item.diagramPreviewUrl ? (
+		  <img
+			src={item.diagramPreviewUrl}
+			alt="Question diagram"
+			className="max-h-48 mx-auto mb-2 rounded"
+		  />
+		) : (
+		  <div className="h-32 flex items-center justify-center bg-ink-900/5 rounded mb-2 text-ink-900/30 text-xs">
+			No image uploaded yet — placeholder
+		  </div>
+		)}
+
+		<input
+		  type="file"
+		  accept="image/png,image/jpeg,image/webp"
+		  onChange={(e) => {
+			const file = e.target.files[0];
+			if (!file) return;
+
+			onChange({
+			  ...item,
+			  diagramFile: file,
+			  diagramPreviewUrl: URL.createObjectURL(file),
+			});
+		  }}
+		  className="text-xs"
+		/>
+	  </div>
+	)}
+
+	<label className="block text-xs font-medium text-ink-900/70 mb-1 mt-2">
+	  Options
+	</label>
+
+	<div className="space-y-3">
+	  {item.options.map((opt, idx) => (
           <div key={idx} className="flex items-start gap-2 p-2.5 rounded-lg border border-ink-900/8">
             <input
               type="radio"
@@ -137,11 +195,12 @@ function makeManualItem() {
     tamilBody: '',
     previousAppearances: [],
     options: [
-      { label: 'A', text: '', textTamil: '', isCorrect: true },
-      { label: 'B', text: '', textTamil: '' },
-      { label: 'C', text: '', textTamil: '' },
-      { label: 'D', text: '', textTamil: '' },
-    ],
+	  { label: 'A', text: '', textTamil: '', isCorrect: true },
+	  { label: 'B', text: '', textTamil: '' },
+	  { label: 'C', text: '', textTamil: '' },
+	  { label: 'D', text: '', textTamil: '' },
+	  { label: 'E', text: '', textTamil: '' },
+	],
     saved: false,
   };
 }
@@ -231,11 +290,12 @@ export default function QuestionBuilder() {
         options: q.options.length
           ? q.options.map((o, i) => ({ label: o.label, text: o.text, textTamil: o.textTamil || '', isCorrect: i === 0 }))
           : [
-              { label: 'A', text: '', textTamil: '', isCorrect: true },
-              { label: 'B', text: '', textTamil: '' },
-              { label: 'C', text: '', textTamil: '' },
-              { label: 'D', text: '', textTamil: '' },
-            ],
+			{ label: 'A', text: '', textTamil: '', isCorrect: true },
+			{ label: 'B', text: '', textTamil: '' },
+			{ label: 'C', text: '', textTamil: '' },
+			{ label: 'D', text: '', textTamil: '' },
+			{ label: 'E', text: '', textTamil: '' },
+		  ],
         saved: false,
       }));
 
@@ -267,28 +327,34 @@ export default function QuestionBuilder() {
 
   async function saveItem(item) {
     if (!item.subjectId) { toast.warning('Select a subject before saving.'); return; }
-    if (!item.englishBody.trim()) { toast.warning('Enter the question text in English.'); return; }
-    const filledOptions = item.options.filter((o) => o.text.trim());
-    if (filledOptions.length < 2) { toast.warning('Enter at least two options.'); return; }
-    if (!item.options.some((o) => o.isCorrect && o.text.trim())) { toast.warning('Mark which option is correct.'); return; }
+    if (!item.englishBody.trim() && !item.tamilBody.trim()) {
+	  toast.warning('Enter the question text in English or Tamil.');
+	  return;
+	}
+	const filledOptions = item.options.filter((o) => o.text.trim() || o.textTamil?.trim());
+	if (filledOptions.length < 2) { toast.warning('Enter at least two options.'); return; }
+	if (!item.options.some((o) => o.isCorrect && (o.text.trim() || o.textTamil?.trim()))) {
+	  toast.warning('Mark which option is correct.');
+	  return;
+	}
 
     const payload = {
       subjectId: item.subjectId,
       type: 'SINGLE_MCQ',
       difficulty: 'Medium',
       translations: [
-        { languageCode: 'en', body: item.englishBody },
-        ...(item.tamilBody ? [{ languageCode: 'ta', body: item.tamilBody }] : []),
-      ],
+		  ...(item.englishBody.trim() ? [{ languageCode: 'en', body: item.englishBody }] : []),
+		  ...(item.tamilBody.trim() ? [{ languageCode: 'ta', body: item.tamilBody }] : []),
+		],
       options: item.options
-        .filter((o) => o.text.trim())
-        .map((o) => ({
-          isCorrect: !!o.isCorrect,
-          translations: [
-            { languageCode: 'en', body: o.text },
-            ...(o.textTamil?.trim() ? [{ languageCode: 'ta', body: o.textTamil }] : []),
-          ],
-        })),
+	  .filter((o) => o.text.trim() || o.textTamil?.trim())
+	  .map((o) => ({
+		isCorrect: !!o.isCorrect,
+		translations: [
+		  ...(o.text.trim() ? [{ languageCode: 'en', body: o.text }] : []),
+		  ...(o.textTamil?.trim() ? [{ languageCode: 'ta', body: o.textTamil }] : []),
+		],
+	  })),
       preparationMode: item.mode,
       ocrConfidence: item.ocrConfidence,
       ocrSourceRef: item.sourceRef,
