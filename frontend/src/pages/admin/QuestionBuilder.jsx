@@ -53,10 +53,10 @@ function QueueItem({ item, subjects, onChange, onRemove, onSave, onSubmitReview 
         onChange={(v) => onChange({ ...item, englishBody: v })}
       />
       <FormattableInput
-        value={opt.textTamil || ''}
-        onChange={(v) => onChange({ ...item, options: item.options.map((o, i) => (i === idx ? { ...o, textTamil: v } : o)) })}
+        label="Question text — Tamil"
+        value={item.tamilBody}
+        onChange={(v) => onChange({ ...item, tamilBody: v })}
         mode="tamil-live"
-        placeholder={`Option ${opt.label || idx + 1} — Tamil`}
       />
 
       <PreviouslyAskedIn
@@ -128,10 +128,10 @@ function QueueItem({ item, subjects, onChange, onRemove, onSave, onSubmitReview 
 
 	<div className="space-y-3">
 	  {item.options.map((opt, idx) => (
-          <div key={idx} className="flex items-start gap-2 p-2.5 rounded-lg border border-ink-900/8">
+          <div key={idx} className="flex items-center gap-2 p-2.5 rounded-lg border border-ink-900/8">
             <input
               type="radio"
-              className="mt-2.5"
+              className=""
               name={`correct-${item.key}`}
               checked={opt.isCorrect}
               onChange={() =>
@@ -142,27 +142,27 @@ function QueueItem({ item, subjects, onChange, onRemove, onSave, onSubmitReview 
               }
             />
             <div className="flex-1 grid grid-cols-2 gap-2">
-              <input
-                className="px-2.5 py-1.5 rounded-lg border border-ink-900/15 text-sm"
-                value={opt.text}
-                onChange={(e) =>
-                  onChange({
-                    ...item,
-                    options: item.options.map((o, i) => (i === idx ? { ...o, text: e.target.value } : o)),
-                  })
-                }
-                placeholder={`Option ${opt.label || idx + 1} — English`}
-              />
-              <input
-                lang="ta"
-                className="px-2.5 py-1.5 rounded-lg border border-ink-900/15 text-sm"
+              <FormattableInput
+                  value={opt.text || ''}
+                  onChange={(v) =>
+                    onChange({
+                      ...item,
+                      options: item.options.map((o, i) =>
+                        i === idx ? { ...o, text: v } : o
+                      ),
+                    })
+                  }
+                  placeholder={`Option ${opt.label || idx + 1} — English`}
+                />
+              <FormattableInput
                 value={opt.textTamil || ''}
-                onChange={(e) =>
+                onChange={(v) =>
                   onChange({
                     ...item,
-                    options: item.options.map((o, i) => (i === idx ? { ...o, textTamil: e.target.value } : o)),
+                    options: item.options.map((o, i) => (i === idx ? { ...o, textTamil: v } : o)),
                   })
                 }
+                mode="tamil-live"
                 placeholder={`Option ${opt.label || idx + 1} — Tamil`}
               />
             </div>

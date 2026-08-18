@@ -11,20 +11,36 @@ router.use(authenticate);
 
 const MARGIN = 50;
 const TAMIL_FONT_PATH = path.join(process.cwd(), 'assets', 'fonts', 'NotoSansTamil-Regular.ttf');
+
+const MAX_BODY_CHARS = 2000;
+function safeBody(text) {
+  if (!text) return '';
+  if (text.length <= MAX_BODY_CHARS) return text;
+  return text.slice(0, MAX_BODY_CHARS) + ' […content truncated — this question has abnormally long text, check it in Question Builder]';
+}
+
+// "Previously asked in" labels -- capped both in COUNT and total length.
+// This was the one field the earlier safeBody() pass missed, and is a
+// second, independent way a single corrupted question can blow up page
+// count (a question with hundreds of appearance rows renders one giant
+// unbroken bold line here).
+const MAX_APPEARANCE_LABELS = 10;
+function safePriorSuffix(appearances) {
+  const labels = (appearances || []).map((a) => a.label).filter(Boolean);
+  if (!labels.length) return '';
+  const shown = labels.slice(0, MAX_APPEARANCE_LABELS);
+  const extra = labels.length - shown.length;
+  const joined = shown.join(', ') + (extra > 0 ? ` (+${extra} more)` : '');
+  return `  ${safeBody(joined)}`;
+}
+
 const tamilFontAvailable = fs.existsSync(TAMIL_FONT_PATH);
 const VALID_ANSWER_KEY_POLICIES = ['NONE', 'EMBEDDED', 'SEPARATE_SECTION'];
 
-// GET /api/question-papers/pdf-font-status — lets the frontend warn up
-// front if Tamil text will be omitted from exports, rather than the
-// preparer discovering it after downloading a PDF.
 router.get('/pdf-font-status', (req, res) => {
   res.json({ tamilFontAvailable });
 });
 
-/**
- * Computes the top-left (x, y) to draw a watermark image at, for a given
- * named position on a page of size (pageWidth, pageHeight).
- */
 function watermarkOrigin(position, pageWidth, pageHeight, imgWidth, imgHeight) {
   const pad = 24;
   const positions = {
@@ -41,12 +57,10 @@ function watermarkOrigin(position, pageWidth, pageHeight, imgWidth, imgHeight) {
   return positions[position] || positions.center;
 }
 
-// POST /api/question-papers/:id/export-pdf
-// { brandingProfileId?: string, watermark?: { enabled, position, pages: 'all'|'custom', customPages: number[] } }
 router.post('/:id/export-pdf', requirePermission('paper.read'), async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { brandingProfileId, watermark, answerKeyOverride } = req.body;
+    const { brandingProfileId, watermark, answerKeyOverride, includePreviouslyAskedIn = true } = req.body;
 
     const paper = await prisma.questionPaper.findUnique({
       where: { id },
@@ -68,11 +82,12 @@ router.post('/:id/export-pdf', requirePermission('paper.read'), async (req, res,
       },
     });
     if (!paper) return res.status(404).json({ error: 'NOT_FOUND' });
+    req.log?.warn({
+      paperId: id,
+      itemCount: paper.items.length,
+      itemIds: paper.items.map((it) => it.question.id),
+    }, '[DIAG] paper fetched');
 
-    // The paper's approved policy is the default for every export; a
-    // single download can override it (e.g. Super Admin wants one
-    // no-key copy for public posting and one separate-section copy for
-    // internal distribution) WITHOUT changing what's stored on the paper.
     const answerKeyPolicy = VALID_ANSWER_KEY_POLICIES.includes(answerKeyOverride)
       ? answerKeyOverride
       : paper.answerKeyPolicy || 'NONE';
@@ -81,26 +96,27 @@ router.post('/:id/export-pdf', requirePermission('paper.read'), async (req, res,
       ? await prisma.brandingProfile.findUnique({ where: { id: brandingProfileId } })
       : await prisma.brandingProfile.findFirst({ where: { isDefault: true } });
 
-    // Confidential mode is enforced here too, at render time, not just at
-    // the settings-save step — a paper can never end up with identity
-    // fields printed for a confidential profile, even if some future code
-    // path passed one in unexpectedly.
     const showBranding = branding && !branding.confidentialMode;
+    req.log?.warn({ brandingFound: !!branding, confidentialMode: branding?.confidentialMode, showBranding }, '[BRANDING DEBUG]');
 
     const wm = {
       enabled: !!watermark?.enabled && showBranding && !!branding?.logoUrl,
       position: watermark?.position || 'center',
-      pages: watermark?.pages || 'all', // 'all' | 'custom'
+      pages: watermark?.pages || 'all',
       customPages: Array.isArray(watermark?.customPages) ? watermark.customPages : [],
     };
     const logoPath = branding?.logoUrl ? path.join(process.cwd(), branding.logoUrl.replace(/^\//, '')) : null;
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${paper.title.replace(/[^a-z0-9]/gi, '_')}.pdf"`);
+    res.on('error', (err) => {
+      req.log?.error({ err }, 'PDF export response stream error (client likely disconnected mid-stream)');
+    });
 
     const doc = new PDFDocument({ size: 'A4', margin: MARGIN, bufferPages: true });
     let pageNumber = 0;
     let tamilContentSkipped = false;
+    let aborted = false; // <-- NEW: actually stops generation, not just logging
     if (tamilFontAvailable) {
       doc.registerFont('Tamil', TAMIL_FONT_PATH);
     }
@@ -112,18 +128,24 @@ router.post('/:id/export-pdf', requirePermission('paper.read'), async (req, res,
       doc.save();
       let cursorY = 20;
       if (showLogoThisPage && logoPath) {
-        try { doc.image(logoPath, MARGIN, cursorY, { height: 32 }); } catch { /* skip if logo file unreadable */ }
+        try { doc.image(logoPath, MARGIN, cursorY, { fit: [32, 32] }); } catch (err) {
+          req.log?.warn({ message: err.message }, 'Header logo image draw failed, skipping');
+        }
       }
       if (showBranding && branding.instituteName) {
-        doc.fontSize(13).font('Helvetica-Bold').text(branding.instituteName, MARGIN, cursorY, { align: 'center', width: width - MARGIN * 2 });
+        doc.fontSize(13).font('Helvetica-Bold').text(branding.instituteName, MARGIN, cursorY, {
+          align: 'center', width: width - MARGIN * 2, height: 16, ellipsis: true, lineBreak: false,
+        });
         cursorY += 16;
         if (branding.address) {
-          doc.fontSize(8).font('Helvetica').text(branding.address, MARGIN, cursorY, { align: 'center', width: width - MARGIN * 2 });
+          doc.fontSize(8).font('Helvetica').text(branding.address, MARGIN, cursorY, {
+            align: 'center', width: width - MARGIN * 2, height: 10, ellipsis: true, lineBreak: false,
+          });
         }
       }
       doc.fontSize(9).font('Helvetica').fillColor('#555').text(
         `${paper.exam?.name || ''} — ${paper.title}`,
-        MARGIN, 55, { align: 'center', width: width - MARGIN * 2 }
+        MARGIN, 55, { align: 'center', width: width - MARGIN * 2, height: 12, ellipsis: true, lineBreak: false }
       );
       doc.moveTo(MARGIN, 72).lineTo(width - MARGIN, 72).strokeColor('#ccc').stroke();
 
@@ -153,18 +175,34 @@ router.post('/:id/export-pdf', requirePermission('paper.read'), async (req, res,
       } catch { /* skip if watermark image unreadable */ }
     }
 
+    const MAX_PAGES = 300;
+
     doc.on('pageAdded', () => {
       pageNumber += 1;
-      drawHeaderFooter(pageNumber);
-      maybeDrawWatermark(pageNumber);
+      if (pageNumber % 25 === 0 || pageNumber < 5) {
+        req.log?.warn({ pageNumber, docY: doc.y, qNumber }, '[DIAG] page added');
+      }
+      if (aborted) return;
+      if (pageNumber > MAX_PAGES) {
+        aborted = true;
+        req.log?.error({ pageNumber }, 'PDF export exceeded MAX_PAGES -- aborting to avoid OOM');
+        res.destroy(new Error('PDF generation exceeded maximum page count'));
+        return;
+      }
+      try {
+        drawHeaderFooter(pageNumber);
+        maybeDrawWatermark(pageNumber);
+      } catch (err) {
+        req.log?.error({ message: err.message, stack: err.stack?.slice(0, 500), pageNumber }, 'Header/footer/watermark draw failed for this page');
+      }
     });
-
     doc.pipe(res);
-    // The constructor's implicit first page fires 'pageAdded' too, so the
-    // handler above already covers page 1 — no separate manual call needed.
 
-    // Group questions by subject, in the order they first appear.
     const groups = [];
+    req.log?.warn({
+      groupCount: groups.length,
+      groupSizes: groups.map((g) => ({ name: g.name, count: g.items.length })),
+    }, '[DIAG] groups built');
     for (const item of paper.items) {
       const subjName = item.question.subject?.name || 'General';
       let group = groups.find((g) => g.name === subjName);
@@ -173,57 +211,68 @@ router.post('/:id/export-pdf', requirePermission('paper.read'), async (req, res,
     }
 
     let qNumber = 0;
-    const answerKeyEntries = []; // [{ qNumber, label }] — used when policy is SEPARATE_SECTION
+    const answerKeyEntries = [];
+
+    groupLoop:
     for (const group of groups) {
-      doc.fontSize(12).font('Helvetica-Bold').fillColor('#000').text(group.name, { underline: true });
-      doc.moveDown(0.5);
+      if (aborted) break groupLoop;
+      // Subject heading intentionally removed per requirement -- questions
+      // flow continuously without a per-subject label.
 
       for (const item of group.items) {
+        if (aborted) break groupLoop;
         qNumber += 1;
+        const pageAtQuestionStart = pageNumber;
         const q = item.question;
         const en = q.translations.find((t) => t.languageCode === 'en');
         const ta = q.translations.find((t) => t.languageCode === 'ta');
+
         const correctOption = q.options.find((o) => o.isCorrect);
         if (correctOption) {
           const label = ['A', 'B', 'C', 'D', 'E', 'F'][q.options.indexOf(correctOption)] || '';
           answerKeyEntries.push({ qNumber, label });
         }
+        const priorSuffix = includePreviouslyAskedIn ? safePriorSuffix(q.appearances) : '';
 
-        // "Previously asked in" — printed in bold at the end of the
-        // English question line only (matches source-paper convention,
-        // e.g. "...is CCS4T/19"). Every appearance the question has is
-        // shown, comma-separated.
-        const priorLabels = q.appearances?.map((a) => a.label).filter(Boolean) || [];
-        const priorSuffix = priorLabels.length ? `  ${priorLabels.join(', ')}` : '';
-
+        // ---- English question ----
         doc.fontSize(10).font('Helvetica-Bold').fillColor('#000')
           .text(`${qNumber}. `, { continued: true })
-          .font('Helvetica').text(en?.body || '', { continued: !!priorSuffix });
+          .font('Helvetica').text(safeBody(en?.body), { continued: !!priorSuffix, width: doc.page.width - MARGIN * 2 });
         if (priorSuffix) doc.font('Helvetica-Bold').text(priorSuffix);
 
+        doc.moveDown(0.35); // padding: question -> its options
+
+        // ---- English options ----
         for (const opt of q.options) {
           const optEn = opt.translations.find((t) => t.languageCode === 'en');
           const label = ['A', 'B', 'C', 'D', 'E', 'F'][q.options.indexOf(opt)] || '';
           if (!optEn) continue;
-          // Correctness is a single property of the option shared across
-          // languages (see QuestionOption.isCorrect in the schema) — so
-          // the SAME option bolds in both the English and Tamil renders
-          // below, driven by one flag, never chosen per-language.
           const bold = answerKeyPolicy === 'EMBEDDED' && opt.isCorrect;
-          doc.fontSize(9).font(bold ? 'Helvetica-Bold' : 'Helvetica').text(`   (${label}) ${optEn.body}`);
+          doc.fontSize(9).font(bold ? 'Helvetica-Bold' : 'Helvetica').text(`   (${label}) ${safeBody(optEn.body)}`);
         }
 
+        // ---- Tamil block (question + its own options), only if present ----
         if (ta?.body) {
+          doc.moveDown(0.5); // padding: English block -> Tamil block
+          doc.moveDown(0.25);
+
           if (tamilFontAvailable) {
-            doc.font('Tamil').fontSize(10).text(ta.body);
+            doc.font('Tamil').fontSize(10).text(safeBody(ta.body));
+            doc.moveDown(0.35); // padding: Tamil question -> Tamil options
+
             for (const opt of q.options) {
               const optTa = opt.translations.find((t) => t.languageCode === 'ta');
+              const optEn = opt.translations.find((t) => t.languageCode === 'en');
               const label = ['A', 'B', 'C', 'D', 'E', 'F'][q.options.indexOf(opt)] || '';
-              if (!optTa) continue;
+              // If this option has no Tamil translation (e.g. a formula
+              // like K2Cr2O7 that's identical in both languages), fall
+              // back to the English text rather than leaving it blank.
+              const displayText = optTa?.body?.trim() ? optTa.body : optEn?.body;
+              if (!displayText) continue;
               const bold = answerKeyPolicy === 'EMBEDDED' && opt.isCorrect;
-              doc.font('Tamil').fontSize(9).text(`   (${label}) ${optTa.body}`, { underline: bold }); // pdfkit's Tamil font may lack a bold variant — underline stands in as the bold-equivalent emphasis
+              doc.font('Tamil').fontSize(9).text(`   (${label}) ${safeBody(displayText)}`, { underline: bold });
             }
-            doc.font('Helvetica'); // reset for the next question's English text
+            doc.font('Helvetica');
           } else {
             tamilContentSkipped = true;
             doc.fontSize(8).font('Helvetica-Oblique').fillColor('#999')
@@ -232,10 +281,29 @@ router.post('/:id/export-pdf', requirePermission('paper.read'), async (req, res,
           }
         }
 
-        doc.moveDown(0.7);
+        doc.moveDown(1);
         if (doc.y > doc.page.height - MARGIN - 60) doc.addPage();
+
+        // Safety net: no single question should ever legitimately need more
+        // than a handful of pages. If one somehow does (corrupted text
+        // breaking PDFKit's pagination, an oversized field that slipped
+        // past safeBody, etc.), stop the WHOLE export rather than let it
+        // consume unbounded memory -- this is what let qNumber:5 sit stuck
+        // while pageNumber climbed to 600.
+        if (pageNumber - pageAtQuestionStart > 15) {
+          req.log?.error({ questionId: q.id, humanCode: q.humanCode, pagesConsumed: pageNumber - pageAtQuestionStart }, 'Single question consumed abnormal page count -- aborting export, this question needs manual review');
+          aborted = true;
+          res.destroy(new Error(`Question ${q.humanCode} appears to have corrupted content that breaks PDF pagination -- fix it in Question Builder before exporting this paper.`));
+          break groupLoop;
+        }
       }
       doc.moveDown(0.5);
+    }
+
+    if (aborted) {
+      // res.destroy() already ended the response -- do NOT call doc.end()
+      // or req.audit() on a stream that's already torn down.
+      return;
     }
 
     if (answerKeyPolicy === 'SEPARATE_SECTION' && answerKeyEntries.length) {
@@ -243,11 +311,11 @@ router.post('/:id/export-pdf', requirePermission('paper.read'), async (req, res,
       doc.fontSize(14).font('Helvetica-Bold').fillColor('#000').text('ANSWER KEY', { align: 'center' });
       doc.moveDown(1);
 
-      // Grid layout, ~5 entries per row, e.g. "Q1 - A   Q2 - C   Q3 - B ..."
       const perRow = 5;
       const colWidth = (doc.page.width - MARGIN * 2) / perRow;
       doc.fontSize(10).font('Helvetica');
       for (let i = 0; i < answerKeyEntries.length; i += perRow) {
+        if (aborted) break;
         const row = answerKeyEntries.slice(i, i + perRow);
         const y = doc.y;
         row.forEach((entry, col) => {
@@ -258,6 +326,8 @@ router.post('/:id/export-pdf', requirePermission('paper.read'), async (req, res,
       }
     }
 
+    if (aborted) return;
+
     await req.audit('PAPER_EXPORT_PDF', 'QuestionPaper', id, { watermarkEnabled: wm.enabled, tamilContentSkipped, answerKeyPolicy });
     doc.end();
   } catch (err) {
@@ -265,13 +335,6 @@ router.post('/:id/export-pdf', requirePermission('paper.read'), async (req, res,
   }
 });
 
-// POST /api/question-papers/:id/export-answer-key
-// Standalone answer-key-only export — Q# / correct option, nothing else.
-// Independent of the paper's own answerKeyPolicy (works even for a paper
-// published with policy NONE, i.e. the public copy has no key anywhere)
-// so invigilators/evaluators always have a way to get the key without it
-// ever touching the student-facing document. Gated to paper.approve since
-// that's already Super-Admin-and-above in this app's role setup.
 router.post('/:id/export-answer-key', requirePermission('paper.approve'), async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -286,9 +349,17 @@ router.post('/:id/export-answer-key', requirePermission('paper.approve'), async 
       },
     });
     if (!paper) return res.status(404).json({ error: 'NOT_FOUND' });
+    req.log?.warn({
+      paperId: id,
+      itemCount: paper.items.length,
+      itemIds: paper.items.map((it) => it.question.id),
+    }, '[DIAG] paper fetched');
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${paper.title.replace(/[^a-z0-9]/gi, '_')}_ANSWER_KEY.pdf"`);
+    res.on('error', (err) => {
+      req.log?.error({ err }, 'PDF export response stream error (client likely disconnected mid-stream)');
+    });
 
     const doc = new PDFDocument({ size: 'A4', margin: MARGIN, bufferPages: true });
     doc.pipe(res);
