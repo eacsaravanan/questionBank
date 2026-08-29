@@ -74,7 +74,7 @@ router.get('/exam-master-config', requirePermission('exam.configure'), async (re
 router.put('/ocr', requirePermission('ocr.configure'), async (req, res, next) => {
   try {
     const { provider, apiKey, secretKey, endpointUrl } = req.body;
-    if (!['tesseract', 'google-vision', 'custom'].includes(provider)) {
+    if (!['tesseract', 'google-vision', 'document-ai', 'custom'].includes(provider)) {
       return res.status(400).json({ error: 'INVALID_PROVIDER', message: 'Unknown OCR provider.' });
     }
     if (provider === 'google-vision' && !apiKey) {

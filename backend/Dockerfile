@@ -5,6 +5,7 @@ WORKDIR /app
 # needs, which causes silent engine failures. Debian-slim avoids that class
 # of bug entirely.
 RUN apt-get update -y && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -y && apt-get install -y poppler-utils && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
 RUN npm install --production

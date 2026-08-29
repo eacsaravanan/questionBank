@@ -43,8 +43,8 @@ export default function ResetPassword() {
     <div className="min-h-screen bg-ink-950 flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <div className="flex items-center gap-2 justify-center mb-8">
-          <img src="/dturn-logo.png" alt="dturn" className="h-8 w-auto" />
-          <span className="font-display font-bold text-2xl text-white tracking-tight">dturn Question Bank</span>
+          <img src="/dturn_site_logo.png" alt="dturn" className="h-8 w-auto" style={{ background: '#fff', borderRadius: '10px', padding: '10px' }} />
+          <span className="font-display font-bold text-2xl text-white tracking-tight">dEDU</span>
         </div>
 
         <div className="bg-ink-900 border border-white/10 rounded-2xl p-8">

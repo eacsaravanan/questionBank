@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { FileCheck2, CalendarClock, Send, FileDown, KeySquare } from 'lucide-react';
+import { FileCheck2, CalendarClock, Send, FileDown, KeySquare, Trash2 } from 'lucide-react';
 import AppShell from '../../components/AppShell.jsx';
 import { PageHeader, Card, Button, Badge } from '../../components/ui.jsx';
 import { SUPER_ADMIN_NAV as NAV } from './nav.js';
@@ -10,6 +10,9 @@ import ExportPdfModal from '../../components/ExportPdfModal.jsx';
 import AnswerKeyPolicyModal from '../../components/AnswerKeyPolicyModal.jsx';
 
 const ANSWER_KEY_POLICY_LABEL = { NONE: 'No answer key', EMBEDDED: 'Key embedded', SEPARATE_SECTION: 'Key: separate section' };
+// Keep in sync with DELETABLE_PAPER_STATUSES in questionPaper.routes.js — once a paper
+// is APPROVED it may be referenced by a schedule, so deletion is no longer offered.
+const DELETABLE_PAPER_STATUSES = new Set(['DRAFT', 'PENDING_SME_APPROVAL', 'PENDING_SUPER_ADMIN_APPROVAL', 'CHANGES_REQUESTED']);
 
 export default function PaperAssembly() {
   const toast = useToast();
@@ -61,6 +64,50 @@ export default function PaperAssembly() {
       setActivePaper(data);
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Could not create the paper.'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteApprovedQuestion(question) {
+    const ok = await confirm({
+      title: 'Delete this question?',
+      message: `"${question.humanCode}" will be permanently removed from the SME-approved pool. This can't be undone.`,
+      confirmLabel: 'Delete',
+      tone: 'danger',
+    });
+    if (!ok) return;
+
+    setBusy(true);
+    try {
+      await api.delete(`/questions/${question.id}`);
+      toast.success(`${question.humanCode} deleted.`);
+      setSelected((s) => { const n = new Set(s); n.delete(question.id); return n; });
+      await load();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not delete this question.'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deletePaper(paper) {
+    const ok = await confirm({
+      title: 'Delete this paper?',
+      message: `"${paper.title}" will be permanently deleted. Its questions stay in the approved pool and can be added to another paper.`,
+      confirmLabel: 'Delete',
+      tone: 'danger',
+    });
+    if (!ok) return;
+
+    setBusy(true);
+    try {
+      await api.delete(`/question-papers/${paper.id}`);
+      toast.success(`"${paper.title}" deleted.`);
+      if (activePaper?.id === paper.id) setActivePaper(null);
+      await load();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not delete this paper.'));
     } finally {
       setBusy(false);
     }
@@ -164,7 +211,16 @@ export default function PaperAssembly() {
               <li key={q.id} className="flex items-center gap-3 px-3 py-2 text-sm">
                 <input type="checkbox" checked={selected.has(q.id)} onChange={() => toggle(q.id)} />
                 <span className="font-mono text-xs text-ink-900/40">{q.humanCode}</span>
-                <span className="truncate">{q.translations.find((t) => t.languageCode === 'en')?.body}</span>
+                <span className="truncate flex-1">{q.translations.find((t) => t.languageCode === 'en')?.body}</span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => deleteApprovedQuestion(q)}
+                  title="Delete question"
+                  className="text-ink-900/30 hover:text-alert transition-colors shrink-0 disabled:opacity-40"
+                >
+                  <Trash2 size={14} />
+                </button>
               </li>
             ))}
             {approvedQuestions.length === 0 && <li className="px-3 py-4 text-sm text-ink-900/40">No SME-approved questions waiting yet.</li>}
@@ -204,6 +260,11 @@ export default function PaperAssembly() {
                     </Button>
                   )}
                   <Button variant="ghost" onClick={() => setExportingPaper(p)}><span className="flex items-center gap-1 text-xs"><FileDown size={12}/> Export PDF</span></Button>
+                  {DELETABLE_PAPER_STATUSES.has(p.status) && (
+                    <Button variant="ghost" disabled={busy} onClick={() => deletePaper(p)}>
+                      <span className="flex items-center gap-1 text-xs text-alert"><Trash2 size={12}/> Delete</span>
+                    </Button>
+                  )}
                 </div>
               </li>
             ))}
