@@ -168,4 +168,41 @@ router.patch('/:id/answer-key-policy', requirePermission('paper.approve'), async
   }
 });
 
+// DELETE /api/question-papers/:id
+// A paper can only be removed while it's still "in flight" — DRAFT, awaiting
+// either approval stage, or kicked back with changes requested. Once it's
+// APPROVED it may already be referenced by an ExamSchedule (or about to be),
+// so deletion is blocked from that point on to avoid orphaning a scheduled
+// exam; use the exam-schedules flow to cancel a scheduled exam instead.
+const DELETABLE_PAPER_STATUSES = ['DRAFT', 'PENDING_SME_APPROVAL', 'PENDING_SUPER_ADMIN_APPROVAL', 'CHANGES_REQUESTED'];
+
+router.delete('/:id', requirePermission('paper.delete'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const existing = await prisma.questionPaper.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ error: 'NOT_FOUND' });
+
+    const isSuperAdmin = req.user.roles?.includes('Super Admin');
+    if (!isSuperAdmin && existing.createdById !== req.user.id) {
+      return res.status(403).json({ error: 'FORBIDDEN', message: 'You can only delete papers you created.' });
+    }
+
+    if (!DELETABLE_PAPER_STATUSES.includes(existing.status)) {
+      return res.status(409).json({
+        error: 'NOT_DELETABLE',
+        message: `"${existing.title}" is ${existing.status.replaceAll('_', ' ').toLowerCase()} and can no longer be deleted. Cancel its exam schedule first if it needs to be removed.`,
+      });
+    }
+
+    // Items and approval history cascade automatically (see schema); the
+    // approved questions themselves are untouched and remain available to
+    // include in another paper.
+    await prisma.questionPaper.delete({ where: { id } });
+    await req.audit('PAPER_DELETE', 'QuestionPaper', id, { title: existing.title, status: existing.status });
+    res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;

@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import argon2 from 'argon2';
 
@@ -12,7 +13,7 @@ const PERMISSIONS = [
   ['question.update', 'Question Bank'], ['question.delete', 'Question Bank'],
   ['question.review', 'Question Bank'], ['question.approve', 'Question Bank'],
   ['paper.create', 'Question Papers'], ['paper.read', 'Question Papers'],
-  ['paper.approve', 'Question Papers'],
+  ['paper.approve', 'Question Papers'], ['paper.delete', 'Question Papers'],
   ['exam.configure', 'Exam Scheduling'], ['exam.schedule', 'Exam Scheduling'],
   ['audit.read', 'Audit & Compliance'], ['audit.export', 'Audit & Compliance'],
   ['system.configure', 'System Configuration'],
@@ -75,7 +76,7 @@ async function main() {
   await syncRole(
     'Admin',
     'Question Preparator — builds question banks and assembles papers.',
-    ['content.read', 'question.create', 'question.read', 'question.update', 'question.delete', 'paper.create', 'paper.read']
+    ['content.read', 'question.create', 'question.read', 'question.update', 'question.delete', 'paper.create', 'paper.read', 'paper.delete']
   );
 
   await syncRole(

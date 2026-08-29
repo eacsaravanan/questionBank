@@ -348,6 +348,24 @@ router.delete('/:id', requirePermission('question.delete'), async (req, res, nex
       }
     }
 
+    // A question already pulled into one or more papers can't be hard-deleted —
+    // the paper still points at it (QuestionPaperItem has no cascade on the
+    // question side, by design, so we don't silently corrupt an assembled paper).
+    const paperUsageCount = await prisma.questionPaperItem.count({ where: { questionId: id } });
+    if (paperUsageCount > 0) {
+      const papers = await prisma.questionPaperItem.findMany({
+        where: { questionId: id },
+        select: { paper: { select: { title: true } } },
+        distinct: ['paperId'],
+        take: 5,
+      });
+      const titles = papers.map((p) => p.paper.title).join(', ');
+      return res.status(409).json({
+        error: 'IN_USE',
+        message: `This question is still included in ${paperUsageCount} paper${paperUsageCount > 1 ? 's' : ''} (${titles}). Remove it from ${paperUsageCount > 1 ? 'those papers' : 'that paper'} first, or delete the paper${paperUsageCount > 1 ? 's' : ''} instead.`,
+      });
+    }
+
     await prisma.question.delete({ where: { id } });
     await req.audit('QUESTION_DELETE', 'Question', id);
     res.status(204).send();
